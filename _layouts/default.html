@@ -1,0 +1,210 @@
+---
+---
+<!DOCTYPE html>
+<html lang="{{ site.lang | default: "en-US" }}">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  {% seo %}
+  <link rel="stylesheet" href="{{ "/assets/css/style.css?v=" | append: site.github.build_revision | relative_url }}">
+  <style id="toc-style">
+    :root {
+      --toc-width: 300px;
+      --toc-bg: #f6f8fa;
+      --toc-border: #d0d7de;
+      --toc-text: #1f2328;
+      --toc-muted: #59636e;
+      --toc-accent: #0969da;
+      --toc-accent-bg: #ddf4ff;
+      --toc-hover-bg: #eaeef2;
+    }
+    html { scroll-behavior: smooth; }
+    .markdown-body h1[id], .markdown-body h2[id], .markdown-body h3[id] { scroll-margin-top: 16px; }
+
+    #toc-sidebar {
+      position: fixed; top: 0; bottom: 0; left: 0; z-index: 20;
+      width: var(--toc-width); max-width: 85vw;
+      display: flex; flex-direction: column;
+      background: var(--toc-bg); color: var(--toc-text);
+      border-right: 1px solid var(--toc-border);
+      font: 14px/1.4 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif;
+      transform: translateX(-100%); visibility: hidden;
+      transition: transform .2s ease, visibility 0s linear .2s;
+    }
+    body.toc-open #toc-sidebar { transform: none; visibility: visible; transition: transform .2s ease; }
+
+    .toc-head {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 12px 12px 12px 16px; border-bottom: 1px solid var(--toc-border);
+      font-weight: 600;
+    }
+    .toc-btn {
+      display: inline-flex; align-items: center; justify-content: center;
+      width: 32px; height: 32px; padding: 0; border: 1px solid var(--toc-border); border-radius: 6px;
+      background: #fff; color: var(--toc-text); font-size: 18px; line-height: 1; cursor: pointer;
+    }
+    .toc-btn:hover { background: var(--toc-hover-bg); }
+    .toc-btn:focus-visible, #toc-list a:focus-visible, .toc-chevron:focus-visible { outline: 2px solid var(--toc-accent); outline-offset: 1px; }
+
+    #toc-list { position: relative; list-style: none; margin: 0; padding: 8px 0 24px; overflow-y: auto; flex: 1; }
+    #toc-list ul { list-style: none; margin: 0; padding: 0; display: none; }
+    #toc-list li.expanded > ul { display: block; }
+    .toc-row { display: flex; align-items: flex-start; }
+    .toc-chevron {
+      flex: none; width: 24px; height: 28px; margin-left: 4px; padding: 0; border: 0; background: none;
+      color: var(--toc-muted); cursor: pointer; font-size: 11px;
+      transition: transform .15s ease;
+    }
+    li.expanded > .toc-row > .toc-chevron { transform: rotate(90deg); }
+    #toc-list a {
+      display: block; flex: 1; padding: 5px 12px 5px 4px; border-left: 2px solid transparent;
+      color: var(--toc-text); text-decoration: none; border-radius: 0 6px 6px 0;
+    }
+    #toc-list a:hover { background: var(--toc-hover-bg); }
+    .toc-part > .toc-row > a { font-weight: 600; }
+    #toc-list ul a { padding-left: 32px; color: var(--toc-muted); }
+    #toc-list a.active { color: var(--toc-accent); background: var(--toc-accent-bg); border-left-color: var(--toc-accent); }
+
+    #toc-toggle { position: fixed; top: 12px; left: 12px; z-index: 30; box-shadow: 0 1px 3px rgba(31,35,40,.12); }
+    body.toc-open #toc-toggle { display: none; }
+
+    #toc-backdrop { display: none; position: fixed; inset: 0; z-index: 15; background: rgba(31,35,40,.35); }
+
+    @media (min-width: 1100px) {
+      body { transition: padding-left .2s ease; }
+      body.toc-open { padding-left: var(--toc-width); }
+    }
+    @media (max-width: 1099.98px) {
+      body.toc-open #toc-backdrop { display: block; }
+      body.toc-open { overflow: hidden; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      html { scroll-behavior: auto; }
+      #toc-sidebar, body { transition: none !important; }
+    }
+    @media print { #toc-sidebar, #toc-toggle, #toc-backdrop { display: none !important; } body.toc-open { padding-left: 0; } }
+  </style>
+</head>
+<body>
+  <button id="toc-toggle" class="toc-btn" type="button" aria-controls="toc-sidebar" aria-expanded="false" title="Show contents (t)">&#9776;</button>
+  <nav id="toc-sidebar" aria-label="Table of contents">
+    <div class="toc-head">
+      <span>Contents</span>
+      <button id="toc-close" class="toc-btn" type="button" aria-controls="toc-sidebar" title="Hide contents (t)">&times;</button>
+    </div>
+    <ul id="toc-list"></ul>
+  </nav>
+  <div id="toc-backdrop"></div>
+
+  <div id="page" class="container-lg px-3 my-5 markdown-body">
+    {{ content }}
+  </div>
+
+  <script id="toc-script">
+  (function () {
+    var body = document.body;
+    var page = document.getElementById('page');
+    var list = document.getElementById('toc-list');
+    var sidebar = document.getElementById('toc-sidebar');
+    var toggle = document.getElementById('toc-toggle');
+    var wide = window.matchMedia('(min-width: 1100px)');
+    var KEY = 'toc-open';
+
+    function load() { try { return localStorage.getItem(KEY); } catch (e) { return null; } }
+    function save(v) { try { localStorage.setItem(KEY, v); } catch (e) {} }
+
+    // Build the tree: numbered H1 = part, H2 = section inside it.
+    var entries = [];
+    var currentPart = null;
+    var heads = page.querySelectorAll('h1[id], h2[id]');
+    for (var i = 0; i < heads.length; i++) {
+      var h = heads[i];
+      var text = h.textContent.replace(/\s+/g, ' ').trim();
+      var a = document.createElement('a');
+      a.href = '#' + h.id;
+      a.textContent = text;
+      if (h.tagName === 'H1') {
+        if (!/^\d/.test(text)) continue;            // skip the document title
+        var li = document.createElement('li');
+        li.className = 'toc-part';
+        var row = document.createElement('div');
+        row.className = 'toc-row';
+        var chev = document.createElement('button');
+        chev.className = 'toc-chevron';
+        chev.type = 'button';
+        chev.setAttribute('aria-label', 'Expand ' + text);
+        chev.innerHTML = '&#9654;';
+        row.appendChild(chev);
+        row.appendChild(a);
+        li.appendChild(row);
+        li.appendChild(document.createElement('ul'));
+        list.appendChild(li);
+        currentPart = li;
+        chev.addEventListener('click', (function (item) {
+          return function () { item.classList.toggle('expanded'); };
+        })(li));
+        entries.push({ head: h, link: a, part: li });
+      } else if (currentPart) {
+        var sub = document.createElement('li');
+        sub.appendChild(a);
+        currentPart.lastChild.appendChild(sub);
+        entries.push({ head: h, link: a, part: currentPart });
+      }
+    }
+
+    // Open / close
+    function setOpen(open, remember) {
+      body.classList.toggle('toc-open', open);
+      toggle.setAttribute('aria-expanded', String(open));
+      if (remember && wide.matches) save(open ? '1' : '0');
+      if (open) revealActive();
+    }
+    toggle.addEventListener('click', function () { setOpen(true, true); });
+    document.getElementById('toc-close').addEventListener('click', function () { setOpen(false, true); toggle.focus(); });
+    document.getElementById('toc-backdrop').addEventListener('click', function () { setOpen(false, false); });
+    document.addEventListener('keydown', function (e) {
+      if (e.key === 'Escape' && body.classList.contains('toc-open') && !wide.matches) setOpen(false, false);
+      var tag = (e.target.tagName || '').toLowerCase();
+      if (e.key === 't' && !e.metaKey && !e.ctrlKey && !e.altKey && tag !== 'input' && tag !== 'textarea') {
+        setOpen(!body.classList.contains('toc-open'), true);
+      }
+    });
+    list.addEventListener('click', function (e) {
+      if (e.target.tagName === 'A' && !wide.matches) setOpen(false, false);
+    });
+    wide.addEventListener('change', function () { setOpen(wide.matches && load() !== '0', false); });
+    setOpen(wide.matches && load() !== '0', false);
+
+    // Highlight the section being read
+    var active = null;
+    function revealActive() {
+      if (!active) return;
+      var top = active.offsetTop, bottom = top + active.offsetHeight;
+      if (top < list.scrollTop || bottom > list.scrollTop + list.clientHeight) {
+        list.scrollTop = top - list.clientHeight / 3;
+      }
+    }
+    function update() {
+      var current = null;
+      for (var i = 0; i < entries.length; i++) {
+        if (entries[i].head.getBoundingClientRect().top <= 80) current = entries[i]; else break;
+      }
+      var link = current ? current.link : null;
+      if (link === active) return;
+      if (active) active.classList.remove('active');
+      active = link;
+      if (active) {
+        active.classList.add('active');
+        current.part.classList.add('expanded');
+        if (body.classList.contains('toc-open')) revealActive();
+      }
+    }
+    var ticking = false;
+    window.addEventListener('scroll', function () {
+      if (!ticking) { ticking = true; requestAnimationFrame(function () { ticking = false; update(); }); }
+    }, { passive: true });
+    update();
+  })();
+  </script>
+</body>
+</html>
