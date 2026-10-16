@@ -1,0 +1,15 @@
+# GitHub Pages (Jekyll) configuration
+title: System Internals
+description: From bits to containers, a connected, from-scratch tour of how a Linux system really works.
+theme: jekyll-theme-primer
+
+markdown: kramdown
+kramdown:
+  input: GFM          # GitHub-flavored markdown, GitHub-style heading anchors for the TOC
+  hard_wrap: false
+
+# SystemInternals.md is the homepage (permalink: /).
+# README.md holds the earlier notes; its images (/images/*.png) are not in this folder.
+exclude:
+  - README.md
+  - .backup
