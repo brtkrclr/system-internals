@@ -5,6 +5,15 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
+  <script id="theme-init">
+    // Runs before the page is drawn, so there is no white flash at night.
+    (function () {
+      var saved = null;
+      try { saved = localStorage.getItem('theme'); } catch (e) {}
+      var dark = saved ? saved === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches;
+      document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+    })();
+  </script>
   {% seo %}
   <link rel="stylesheet" href="{{ "/assets/css/style.css?v=" | append: site.github.build_revision | relative_url }}">
   <style id="toc-style">
@@ -17,6 +26,17 @@
       --toc-accent: #0969da;
       --toc-accent-bg: #ddf4ff;
       --toc-hover-bg: #eaeef2;
+      --toc-btn-bg: #ffffff;
+    }
+    html[data-theme="dark"] {
+      --toc-bg: #010409;
+      --toc-border: #3d444d;
+      --toc-text: #e6edf3;
+      --toc-muted: #9198a1;
+      --toc-accent: #4493f8;
+      --toc-accent-bg: rgba(56, 139, 253, 0.15);
+      --toc-hover-bg: #151b23;
+      --toc-btn-bg: #151b23;
     }
     html { scroll-behavior: smooth; }
     .markdown-body h1[id], .markdown-body h2[id], .markdown-body h3[id] { scroll-margin-top: 16px; }
@@ -41,7 +61,7 @@
     .toc-btn {
       display: inline-flex; align-items: center; justify-content: center;
       width: 32px; height: 32px; padding: 0; border: 1px solid var(--toc-border); border-radius: 6px;
-      background: #fff; color: var(--toc-text); font-size: 18px; line-height: 1; cursor: pointer;
+      background: var(--toc-btn-bg); color: var(--toc-text); font-size: 18px; line-height: 1; cursor: pointer;
     }
     .toc-btn:hover { background: var(--toc-hover-bg); }
     .toc-btn:focus-visible, #toc-list a:focus-visible, .toc-chevron:focus-visible { outline: 2px solid var(--toc-accent); outline-offset: 1px; }
@@ -67,8 +87,9 @@
 
     #toc-toggle { position: fixed; top: 12px; left: 12px; z-index: 30; box-shadow: 0 1px 3px rgba(31,35,40,.12); }
     body.toc-open #toc-toggle { display: none; }
+    #theme-toggle { position: fixed; top: 12px; right: 12px; z-index: 30; font-size: 16px; box-shadow: 0 1px 3px rgba(31,35,40,.12); }
 
-    #toc-backdrop { display: none; position: fixed; inset: 0; z-index: 15; background: rgba(31,35,40,.35); }
+    #toc-backdrop { display: none; position: fixed; inset: 0; z-index: 15; background: rgba(1,4,9,.45); }
 
     @media (min-width: 1100px) {
       body { transition: padding-left .2s ease; }
@@ -82,11 +103,71 @@
       html { scroll-behavior: auto; }
       #toc-sidebar, body { transition: none !important; }
     }
-    @media print { #toc-sidebar, #toc-toggle, #toc-backdrop { display: none !important; } body.toc-open { padding-left: 0; } }
+    @media print {
+      #toc-sidebar, #toc-toggle, #toc-backdrop, #theme-toggle { display: none !important; }
+      body.toc-open { padding-left: 0; }
+    }
+  </style>
+  <style id="theme-style">
+    /* Dark theme: GitHub's dark palette, layered over the light Primer theme. */
+    html[data-theme="dark"] { color-scheme: dark; }
+    html[data-theme="dark"] body { background: #0d1117; color: #e6edf3; }
+    html[data-theme="dark"] .markdown-body { color: #e6edf3; background: transparent; }
+    html[data-theme="dark"] .markdown-body a { color: #4493f8; }
+    html[data-theme="dark"] .markdown-body h1,
+    html[data-theme="dark"] .markdown-body h2,
+    html[data-theme="dark"] .markdown-body h3,
+    html[data-theme="dark"] .markdown-body h4,
+    html[data-theme="dark"] .markdown-body h5,
+    html[data-theme="dark"] .markdown-body h6 { color: #f0f6fc; border-bottom-color: #3d444d; }
+    html[data-theme="dark"] .markdown-body hr { background-color: #3d444d; border-color: #3d444d; }
+    html[data-theme="dark"] .markdown-body blockquote { color: #9198a1; border-left-color: #3d444d; }
+    html[data-theme="dark"] .markdown-body table th,
+    html[data-theme="dark"] .markdown-body table td { border-color: #3d444d; }
+    html[data-theme="dark"] .markdown-body table tr { background-color: #0d1117; border-top-color: #3d444d; }
+    html[data-theme="dark"] .markdown-body table tr:nth-child(2n) { background-color: #151b23; }
+    html[data-theme="dark"] .markdown-body code,
+    html[data-theme="dark"] .markdown-body tt { background-color: rgba(101, 108, 118, 0.2); color: #e6edf3; }
+    html[data-theme="dark"] .markdown-body pre,
+    html[data-theme="dark"] .markdown-body .highlight,
+    html[data-theme="dark"] .markdown-body .highlight pre { background-color: #151b23; color: #e6edf3; }
+    html[data-theme="dark"] .markdown-body pre code { background: transparent; }
+    html[data-theme="dark"] .markdown-body kbd { background-color: #151b23; color: #e6edf3; border-color: #3d444d; box-shadow: inset 0 -1px 0 #3d444d; }
+    html[data-theme="dark"] .markdown-body img { background-color: transparent; }
+
+    /* Syntax highlighting (Rouge token classes) */
+    html[data-theme="dark"] .highlight span { color: inherit; background: transparent; font-style: normal; }
+    html[data-theme="dark"] .highlight .c, html[data-theme="dark"] .highlight .c1,
+    html[data-theme="dark"] .highlight .cm, html[data-theme="dark"] .highlight .cs { color: #9198a1; font-style: italic; }
+    html[data-theme="dark"] .highlight .cp, html[data-theme="dark"] .highlight .cpf { color: #ff7b72; }
+    html[data-theme="dark"] .highlight .k, html[data-theme="dark"] .highlight .kd,
+    html[data-theme="dark"] .highlight .kn, html[data-theme="dark"] .highlight .kp,
+    html[data-theme="dark"] .highlight .kr, html[data-theme="dark"] .highlight .kt,
+    html[data-theme="dark"] .highlight .kc, html[data-theme="dark"] .highlight .o,
+    html[data-theme="dark"] .highlight .ow { color: #ff7b72; }
+    html[data-theme="dark"] .highlight .s, html[data-theme="dark"] .highlight .s1,
+    html[data-theme="dark"] .highlight .s2, html[data-theme="dark"] .highlight .sb,
+    html[data-theme="dark"] .highlight .sc, html[data-theme="dark"] .highlight .sd,
+    html[data-theme="dark"] .highlight .se, html[data-theme="dark"] .highlight .sh,
+    html[data-theme="dark"] .highlight .si, html[data-theme="dark"] .highlight .sx,
+    html[data-theme="dark"] .highlight .sr, html[data-theme="dark"] .highlight .ss { color: #a5d6ff; }
+    html[data-theme="dark"] .highlight .m, html[data-theme="dark"] .highlight .mi,
+    html[data-theme="dark"] .highlight .mf, html[data-theme="dark"] .highlight .mh,
+    html[data-theme="dark"] .highlight .mo, html[data-theme="dark"] .highlight .il,
+    html[data-theme="dark"] .highlight .na, html[data-theme="dark"] .highlight .no { color: #79c0ff; }
+    html[data-theme="dark"] .highlight .nf, html[data-theme="dark"] .highlight .fm,
+    html[data-theme="dark"] .highlight .nc, html[data-theme="dark"] .highlight .ne { color: #d2a8ff; }
+    html[data-theme="dark"] .highlight .nb, html[data-theme="dark"] .highlight .bp,
+    html[data-theme="dark"] .highlight .nv, html[data-theme="dark"] .highlight .vg,
+    html[data-theme="dark"] .highlight .vi { color: #ffa657; }
+    html[data-theme="dark"] .highlight .nt, html[data-theme="dark"] .highlight .gi { color: #7ee787; }
+    html[data-theme="dark"] .highlight .gd, html[data-theme="dark"] .highlight .err { color: #ffa198; }
+    html[data-theme="dark"] .highlight .gh, html[data-theme="dark"] .highlight .gu { color: #79c0ff; font-weight: bold; }
   </style>
 </head>
 <body>
   <button id="toc-toggle" class="toc-btn" type="button" aria-controls="toc-sidebar" aria-expanded="false" title="Show contents (t)">&#9776;</button>
+  <button id="theme-toggle" class="toc-btn" type="button" title="Toggle dark mode (d)" aria-label="Toggle dark mode"></button>
   <nav id="toc-sidebar" aria-label="Table of contents">
     <div class="toc-head">
       <span>Contents</span>
@@ -102,18 +183,38 @@
 
   <script id="toc-script">
   (function () {
+    var root = document.documentElement;
     var body = document.body;
     var page = document.getElementById('page');
     var list = document.getElementById('toc-list');
-    var sidebar = document.getElementById('toc-sidebar');
     var toggle = document.getElementById('toc-toggle');
+    var themeBtn = document.getElementById('theme-toggle');
     var wide = window.matchMedia('(min-width: 1100px)');
-    var KEY = 'toc-open';
+    var systemDark = window.matchMedia('(prefers-color-scheme: dark)');
 
-    function load() { try { return localStorage.getItem(KEY); } catch (e) { return null; } }
-    function save(v) { try { localStorage.setItem(KEY, v); } catch (e) {} }
+    function load(key) { try { return localStorage.getItem(key); } catch (e) { return null; } }
+    function save(key, v) { try { localStorage.setItem(key, v); } catch (e) {} }
 
-    // Build the tree: numbered H1 = part, H2 = section inside it.
+    // ---------- Dark mode ----------
+    function applyTheme(theme) {
+      root.setAttribute('data-theme', theme);
+      var dark = theme === 'dark';
+      themeBtn.innerHTML = dark ? '&#9728;' : '&#9790;';          // sun in dark mode, moon in light mode
+      themeBtn.setAttribute('aria-pressed', String(dark));
+      themeBtn.title = dark ? 'Switch to light mode (d)' : 'Switch to dark mode (d)';
+    }
+    function toggleTheme() {
+      var next = root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+      save('theme', next);
+      applyTheme(next);
+    }
+    applyTheme(root.getAttribute('data-theme') || 'light');
+    themeBtn.addEventListener('click', toggleTheme);
+    systemDark.addEventListener('change', function (e) {            // follow the system until the user picks
+      if (!load('theme')) applyTheme(e.matches ? 'dark' : 'light');
+    });
+
+    // ---------- Build the sidebar: numbered H1 = part, H2 = section inside it ----------
     var entries = [];
     var currentPart = null;
     var heads = page.querySelectorAll('h1[id], h2[id]');
@@ -152,11 +253,11 @@
       }
     }
 
-    // Open / close
+    // ---------- Open / close the sidebar ----------
     function setOpen(open, remember) {
       body.classList.toggle('toc-open', open);
       toggle.setAttribute('aria-expanded', String(open));
-      if (remember && wide.matches) save(open ? '1' : '0');
+      if (remember && wide.matches) save('toc-open', open ? '1' : '0');
       if (open) revealActive();
     }
     toggle.addEventListener('click', function () { setOpen(true, true); });
@@ -165,17 +266,17 @@
     document.addEventListener('keydown', function (e) {
       if (e.key === 'Escape' && body.classList.contains('toc-open') && !wide.matches) setOpen(false, false);
       var tag = (e.target.tagName || '').toLowerCase();
-      if (e.key === 't' && !e.metaKey && !e.ctrlKey && !e.altKey && tag !== 'input' && tag !== 'textarea') {
-        setOpen(!body.classList.contains('toc-open'), true);
-      }
+      if (e.metaKey || e.ctrlKey || e.altKey || tag === 'input' || tag === 'textarea') return;
+      if (e.key === 't') setOpen(!body.classList.contains('toc-open'), true);
+      if (e.key === 'd') toggleTheme();
     });
     list.addEventListener('click', function (e) {
       if (e.target.tagName === 'A' && !wide.matches) setOpen(false, false);
     });
-    wide.addEventListener('change', function () { setOpen(wide.matches && load() !== '0', false); });
-    setOpen(wide.matches && load() !== '0', false);
+    wide.addEventListener('change', function () { setOpen(wide.matches && load('toc-open') !== '0', false); });
+    setOpen(wide.matches && load('toc-open') !== '0', false);
 
-    // Highlight the section being read
+    // ---------- Highlight the section being read ----------
     var active = null;
     function revealActive() {
       if (!active) return;
