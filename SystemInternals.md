@@ -24,9 +24,14 @@ Notes on how a Linux machine actually works, from the transistor up to the conta
 11. [Putting It All Together: One Command, Every Layer](#11-putting-it-all-together-one-command-every-layer)
 12. [Questions and Answers](#12-questions-and-answers)
 
+🧪 **New:** [interactive visuals for every part](visuals/index.html): click bits, walk page tables, step through system calls.
+
 ---
 
 # 0. The Big Picture: How Everything Connects
+
+> 🧪 **Interactive visuals:** [Part 0, visualized](visuals/part0-big-picture.html): an interactive page with a demo for each section.
+
 
 A Linux system has three main levels: **hardware**, the **kernel**, and **user processes**.
 
@@ -104,6 +109,9 @@ task_struct (one per process, and one per THREAD)
 ---
 
 # 1. Data Representation
+
+> 🧪 **Interactive visuals:** [Part 1, visualized](visuals/part1-data-representation.html): an interactive page with a demo for each section.
+
 
 ## 1.1 Bits, Bytes and Binary Numbers
 
@@ -706,6 +714,9 @@ Consequences:
 
 # 2. CPU Fundamentals
 
+> 🧪 **Interactive visuals:** [Part 2, visualized](visuals/part2-cpu.html): an interactive page with a demo for each section.
+
+
 ## 2.1 Clock Cycle
 
 A CPU has a **clock signal**, an electrical pulse that oscillates between high and low voltage at a fixed rate, derived from a crystal oscillator (usually quartz). Every "tick" of this clock is one **clock cycle**.
@@ -1167,6 +1178,9 @@ Infinite recursion is the other way to break the stack: each call adds a frame u
 ---
 
 # 3. Operating System Fundamentals
+
+> 🧪 **Interactive visuals:** [Part 3, visualized](visuals/part3-os.html): an interactive page with a demo for each section.
+
 
 ## 3.1 Kernel
 
@@ -1846,6 +1860,9 @@ How a process waits for time:
 ---
 
 # 4. Processes
+
+> 🧪 **Interactive visuals:** [Part 4, visualized](visuals/part4-processes.html): an interactive page with a demo for each section.
+
 
 ## 4.1 Program vs Process
 
@@ -2726,6 +2743,9 @@ Build on the **oldest** system you need to support (or in a matching container),
 
 # 5. Threads and Concurrency
 
+> 🧪 **Interactive visuals:** [Part 5, visualized](visuals/part5-threads.html): an interactive page with a demo for each section.
+
+
 ## 5.1 Threads
 
 A **thread** is the smallest unit of execution that the OS kernel can schedule.
@@ -3179,6 +3199,9 @@ The kernel goes further for read-mostly data:
 ---
 
 # 6. Memory Management
+
+> 🧪 **Interactive visuals:** [Part 6, visualized](visuals/part6-memory.html): an interactive page with a demo for each section.
+
 
 ## 6.1 Physical Memory
 
@@ -3882,15 +3905,22 @@ Who does the reclaiming:
 Because of demand paging (6.5), `malloc` only creates VMAs. So should the kernel allow you to reserve more memory than exists?
 
 ```c
-char *p = malloc(100UL << 30);   // 100 GB on a 16 GB machine with no swap
-// Often succeeds! Fails only when you actually TOUCH more than is available.
+// 16 GB of RAM, no swap
+char *big = malloc(100UL << 30);       // 100 GB in ONE request: refused by the default
+                                       // heuristic (larger than RAM + swap) -> NULL
+
+char *p[10];
+for (int i = 0; i < 10; i++)
+    p[i] = malloc(10UL << 30);         // 10 x 10 GB: each request alone looks plausible,
+                                       // so all succeed -> 100 GB promised on a 16 GB machine.
+                                       // Trouble only starts when you TOUCH more than exists.
 ```
 
 `vm.overcommit_memory` controls this:
 
 | Value | Policy |
 | :---- | :---- |
-| `0` (default) | **Heuristic**: refuse only obviously crazy single requests; otherwise allow overcommit |
+| `0` (default) | **Heuristic**: refuse a single request that obviously can't be satisfied (larger than total RAM + swap); otherwise allow overcommit, so many plausible requests can add up to far more than exists |
 | `1` | **Always** allow (some scientific/Redis setups rely on this) |
 | `2` | **Never** overcommit: total commitments limited to swap + `overcommit_ratio`% of RAM. `malloc` returns NULL properly, but much less memory is usable |
 
@@ -4008,6 +4038,9 @@ Trade-offs: scanning costs CPU, and merged pages can leak information between te
 ---
 
 # 7. Files and I/O
+
+> 🧪 **Interactive visuals:** [Part 7, visualized](visuals/part7-files.html): an interactive page with a demo for each section.
+
 
 ## 7.1 File Descriptors
 
@@ -5013,6 +5046,9 @@ Skip step 2 and a crash may leave a renamed but **empty** file (the rename's met
 
 # 8. Signals
 
+> 🧪 **Interactive visuals:** [Part 8, visualized](visuals/part8-signals.html): an interactive page with a demo for each section.
+
+
 ## 8.1 What Signals Are
 
 A **signal** is a kind of (usually software) interrupt, used to announce **asynchronous events** to a process. It's the kernel's way of tapping a process on the shoulder: "something happened". A signal carries almost no data: just its **number** (and, with `sigaction`'s `SA_SIGINFO`, a little info like the sender's PID).
@@ -5195,6 +5231,9 @@ The common multithreaded pattern: **block all signals in every thread** (set the
 ---
 
 # 9. Inter-Process Communication (IPC)
+
+> 🧪 **Interactive visuals:** [Part 9, visualized](visuals/part9-ipc.html): an interactive page with a demo for each section.
+
 
 Processes are isolated by design (illusion 2: separate address spaces). So when they *need* to talk, they must go through the kernel. Linux offers many mechanisms; which one fits depends on how closely related the processes are (parent/child or unrelated), how fast they need to talk, how much data they exchange, and whether they're on the same machine.
 
@@ -5410,6 +5449,9 @@ $ ss -tim                                  # per-socket TCP internals: rtt, cwnd
 
 # 10. Namespaces and cgroups (Containers)
 
+> 🧪 **Interactive visuals:** [Part 10, visualized](visuals/part10-containers.html): an interactive page with a demo for each section.
+
+
 A container is **not** a virtual machine (2.6). There is no "container" object in the Linux kernel. A container is just **a normal process tree** that the kernel has been told to:
 
 1. **show a restricted view of the system** → **namespaces** ("what can I see?")
@@ -5609,6 +5651,9 @@ Together with **LSMs** (Linux Security Modules: **AppArmor**, **SELinux**), whic
 
 # 11. Putting It All Together: One Command, Every Layer
 
+> 🧪 **Interactive visuals:** [Part 11, visualized](visuals/part11-all-together.html): an interactive page with a demo for each section.
+
+
 Let's trace one ordinary command from keystroke to disk and back, and name the section behind each step:
 
 ```bash
@@ -5712,6 +5757,9 @@ If you can tell this story end to end, and explain *why* each step works the way
 ---
 
 # 12. Questions and Answers
+
+> 🧪 **Interactive visuals:** [Flashcards for every question below](visuals/part12-quiz.html): flip cards, track what you know, shuffle.
+
 
 Each answer points to the sections behind it. Try answering before reading.
 
@@ -6015,9 +6063,15 @@ Handlers are shared by all threads; masks are per thread. The robust pattern is 
 
 **Copy-on-write** (4.9, 6.5). `fork()` copies the page **tables** and marks writable pages read-only in both processes; the data pages are shared. A page is copied only when one side **writes** to it. If the child calls `execve()` right away, almost nothing is ever copied. What *is* proportional to memory size is copying the page tables themselves (~20 MB for 10 GB), which is why `vfork()`/`posix_spawn()` exist for huge processes.
 
-### `malloc(100 GB)` succeeded on a 16 GB machine. How?
+### How can a program allocate 100 GB on a 16 GB machine?
 
-**Overcommit + demand paging** (6.5, 6.8). `malloc` only asked the kernel for a **VMA** (`mmap`): a promise of address space, not RAM. Physical frames are allocated one page at a time when you first **touch** them. With the default heuristic `vm.overcommit_memory = 0`, the kernel allows the promise. If you then actually write to more pages than RAM + swap can hold, the **OOM killer** picks a process and kills it with `SIGKILL` (exit 137). With `vm.overcommit_memory = 2`, the `malloc` would have returned `NULL` instead.
+**Overcommit + demand paging** (6.5, 6.8). `malloc` only asks the kernel for a **VMA** (`mmap`): a promise of address space, not RAM. Physical frames are allocated one page at a time when you first **touch** them. So the kernel can promise more than it has:
+
+- With the default heuristic (`vm.overcommit_memory = 0`), a **single** 100 GB request is refused (it's larger than RAM + swap, so `malloc` returns `NULL`), but **ten 10 GB requests** each look plausible and all succeed.
+- With `vm.overcommit_memory = 1` (always allow), even the single 100 GB request succeeds.
+- With `vm.overcommit_memory = 2` (strict accounting), allocations fail with `NULL` once total commitments exceed swap + `overcommit_ratio`% of RAM.
+
+If the program then actually writes to more pages than RAM + swap can hold, the **OOM killer** picks a process and kills it with `SIGKILL` (exit 137).
 
 ### What's the difference between a page fault and a segmentation fault?
 

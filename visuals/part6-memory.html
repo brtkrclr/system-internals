@@ -1,0 +1,1272 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Memory Management, Visualized</title>
+<meta name="description" content="Interactive visuals for Part 6 of System Internals: page frames, the buddy and slab allocators, virtual memory, the 4-level page walk, PTE flags, VMAs, page faults, mmap, the page cache, reclaim, OOM, huge pages, zswap, zram and KSM.">
+<script>
+  (function () {
+    var saved = null;
+    try { saved = localStorage.getItem('theme'); } catch (e) {}
+    var dark = saved ? saved === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches;
+    document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+  })();
+</script>
+<style>
+  :root {
+    --bg: #ffffff; --surface: #f6f8fa; --surface-2: #eaeef2; --text: #1f2328; --muted: #59636e;
+    --border: #d0d7de; --accent: #0969da; --accent-soft: #ddf4ff;
+    --c-blue: #0969da; --c-pink: #bf3989; --c-green: #1a7f37; --c-amber: #9a6700; --c-purple: #8250df; --c-red: #cf222e;
+    --c-blue-soft: #ddf4ff; --c-pink-soft: #ffeff7; --c-green-soft: #dafbe1; --c-amber-soft: #fff8c5; --c-purple-soft: #fbefff; --c-red-soft: #ffebe9;
+    --hatch: repeating-linear-gradient(45deg, transparent 0 4px, rgba(130,80,223,.22) 4px 7px);
+    --radius: 8px;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  html[data-theme="dark"] {
+    --bg: #0d1117; --surface: #151b23; --surface-2: #212830; --text: #e6edf3; --muted: #9198a1;
+    --border: #3d444d; --accent: #4493f8; --accent-soft: rgba(56,139,253,.15);
+    --c-blue: #4493f8; --c-pink: #f778ba; --c-green: #3fb950; --c-amber: #d29922; --c-purple: #ab7df8; --c-red: #f85149;
+    --c-blue-soft: rgba(56,139,253,.18); --c-pink-soft: rgba(247,120,186,.16); --c-green-soft: rgba(63,185,80,.16);
+    --c-amber-soft: rgba(210,153,34,.18); --c-purple-soft: rgba(171,125,248,.18); --c-red-soft: rgba(248,81,73,.16);
+    --hatch: repeating-linear-gradient(45deg, transparent 0 4px, rgba(171,125,248,.30) 4px 7px);
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif; }
+  a { color: var(--accent); }
+  code, .mono { font-family: var(--mono); font-size: .92em; }
+  code { background: var(--surface-2); padding: .1em .35em; border-radius: 4px; }
+  header.top { max-width: 1040px; margin: 0 auto; padding: 32px 16px 8px; }
+  header.top h1 { margin: 0 0 6px; font-size: clamp(28px, 5vw, 40px); line-height: 1.15; }
+  header.top p { margin: 0 0 8px; color: var(--muted); max-width: 70ch; }
+  .backlink { font-size: 14px; }
+  nav.chips { position: sticky; top: 0; z-index: 10; background: var(--bg); border-bottom: 1px solid var(--border); }
+  nav.chips .inner { max-width: 1040px; margin: 0 auto; padding: 8px 16px; display: flex; gap: 6px; overflow-x: auto; scrollbar-width: thin; }
+  nav.chips a { flex: none; font-size: 13px; padding: 4px 10px; border: 1px solid var(--border); border-radius: 999px;
+                color: var(--text); text-decoration: none; background: var(--surface); white-space: nowrap; }
+  nav.chips a:hover, nav.chips a.active { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+  main { max-width: 1040px; margin: 0 auto; padding: 8px 16px 32px; }
+  section.card { border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin: 24px 0; background: var(--bg); scroll-margin-top: 56px; }
+  section.card > h2 { margin: 0 0 4px; font-size: 22px; }
+  section.card > h2 .num { color: var(--muted); font-weight: 500; margin-right: 6px; }
+  .lead { color: var(--muted); margin: 0 0 16px; max-width: 75ch; }
+  .demo { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; margin: 12px 0; overflow-x: auto; }
+  .demo h3 { margin: 0 0 10px; font-size: 15px; }
+  .row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+  .stack { display: flex; flex-direction: column; gap: 10px; }
+  .connect { font-size: 14px; color: var(--muted); border-left: 3px solid var(--accent); padding: 4px 0 4px 10px; margin-top: 14px; }
+  .hint { font-size: 13px; color: var(--muted); }
+  .big { font-family: var(--mono); font-size: 20px; font-weight: 600; }
+  .stat { display: inline-flex; flex-direction: column; padding: 6px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg); min-width: 90px; }
+  .stat .k { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  .stat .v { font-family: var(--mono); font-size: 18px; font-weight: 600; }
+  .ok { color: var(--c-green); } .bad { color: var(--c-red); } .warn { color: var(--c-amber); }
+  button, select, input[type="text"], input[type="number"] {
+    font: inherit; font-size: 14px; color: var(--text); background: var(--bg);
+    border: 1px solid var(--border); border-radius: 6px; padding: 5px 10px;
+  }
+  button { cursor: pointer; }
+  button:hover { background: var(--surface-2); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover { filter: brightness(1.08); background: var(--accent); }
+  button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  input[type="range"] { accent-color: var(--accent); width: min(320px, 100%); }
+  input[type="number"] { width: 84px; }
+  label.inline { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 13px; color: var(--muted); }
+  .legend span::before { content: ""; display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 5px; vertical-align: -2px; background: var(--sw); border: 1px solid var(--border); }
+  .theme-btn { position: fixed; top: 10px; right: 12px; z-index: 20; width: 34px; height: 34px; padding: 0; font-size: 16px; }
+  footer.pnav { max-width: 1040px; margin: 0 auto; padding: 0 16px 48px; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; font-size: 14px; }
+  table.mem { border-collapse: collapse; font-size: 13px; }
+  table.mem th, table.mem td { border: 1px solid var(--border); padding: 5px 9px; text-align: left; vertical-align: top; }
+  table.mem th { background: var(--surface-2); font-weight: 600; }
+  .log { font: 13px/1.5 var(--mono); background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; max-height: 180px; overflow-y: auto; white-space: pre-wrap; }
+  .box { border: 1px solid var(--border); border-radius: 8px; background: var(--bg); padding: 8px 10px; font-size: 13px; }
+  .box h4 { margin: 0 0 4px; font-size: 13px; font-family: var(--mono); }
+  svg text { font-family: var(--mono); }
+
+  /* frames */
+  .frames { display: grid; grid-template-columns: repeat(16, minmax(22px, 1fr)); gap: 3px; max-width: 640px; }
+  .fr { height: 28px; border-radius: 4px; border: 1px solid var(--border); font: 10px var(--mono); display: flex; align-items: center; justify-content: center; cursor: pointer; padding: 0; color: var(--text); background: var(--bg); }
+  .fr.kernel { background: var(--c-purple-soft); border-color: var(--c-purple); }
+  .fr.procA { background: var(--c-blue-soft); border-color: var(--c-blue); }
+  .fr.procB { background: var(--c-pink-soft); border-color: var(--c-pink); }
+  .fr.cache { background: var(--c-amber-soft); border-color: var(--c-amber); }
+  .fr.free { background: var(--bg); border-style: dashed; color: var(--muted); }
+  .fr.sel { box-shadow: 0 0 0 2px var(--text); }
+
+  /* buddy */
+  .buddy { display: flex; gap: 2px; max-width: 720px; }
+  .bk { height: 46px; border-radius: 5px; display: flex; flex-direction: column; align-items: center; justify-content: center; font: 11px var(--mono); border: 1px solid var(--border); cursor: default; padding: 0; color: var(--text); }
+  .bk.free { background: var(--bg); border-style: dashed; color: var(--muted); }
+  .bk.used { background: var(--c-blue-soft); border-color: var(--c-blue); cursor: pointer; }
+  .bk.flash { box-shadow: 0 0 0 3px var(--c-green); }
+  .orders { display: grid; grid-template-columns: 120px 1fr; gap: 4px 10px; font: 13px var(--mono); }
+
+  .slab { display: inline-grid; grid-template-columns: repeat(7, 14px); gap: 2px; padding: 4px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); }
+  .slab.k64 { grid-template-columns: repeat(16, 9px); }
+  .obj { width: 14px; height: 14px; border-radius: 2px; background: var(--surface-2); }
+  .slab.k64 .obj { width: 9px; height: 9px; }
+  .obj.on { background: var(--c-green); }
+
+  /* page walk */
+  .split { display: flex; flex-wrap: wrap; gap: 4px; font: 13px var(--mono); }
+  .seg { border-radius: 6px; padding: 4px 8px; border: 1px solid var(--border); text-align: center; }
+  .seg b { display: block; font-size: 14px; }
+  .seg.s0 { background: var(--surface-2); } .seg.s1 { background: var(--c-purple-soft); border-color: var(--c-purple); }
+  .seg.s2 { background: var(--c-blue-soft); border-color: var(--c-blue); } .seg.s3 { background: var(--c-green-soft); border-color: var(--c-green); }
+  .seg.s4 { background: var(--c-amber-soft); border-color: var(--c-amber); } .seg.s5 { background: var(--c-pink-soft); border-color: var(--c-pink); }
+  .walk { display: flex; flex-wrap: wrap; align-items: stretch; gap: 6px; }
+  .wstep { border: 1px solid var(--border); border-radius: 8px; background: var(--bg); padding: 8px; min-width: 112px; font: 12px var(--mono); opacity: .45; transition: opacity .2s, box-shadow .2s; }
+  .wstep.on { opacity: 1; }
+  .wstep.cur { box-shadow: 0 0 0 3px var(--accent); }
+  .wstep h4 { margin: 0 0 4px; font: 600 12px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  .warrow { align-self: center; color: var(--muted); font-size: 18px; }
+  .tlb { display: flex; gap: 4px; flex-wrap: wrap; }
+  .tlbe { font: 11px var(--mono); padding: 3px 6px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg); }
+  .tlbe.hit { background: var(--c-green-soft); border-color: var(--c-green); }
+
+  .pte { display: flex; gap: 3px; flex-wrap: wrap; }
+  .pbit { display: flex; flex-direction: column; align-items: center; gap: 2px; font: 11px var(--mono); color: var(--muted); }
+  .pbit button { width: 44px; height: 34px; font: 600 13px var(--mono); padding: 0; }
+  .pbit button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .pbit button.hw { border-style: dashed; }
+
+  .maps { font: 12px var(--mono); border-collapse: collapse; width: 100%; }
+  .maps td { padding: 4px 8px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+  .maps tr { cursor: pointer; }
+  .maps tr:hover td { background: var(--surface-2); }
+  .maps tr.sel td { background: var(--accent-soft); }
+  .pages { display: flex; flex-wrap: wrap; gap: 2px; max-width: 640px; }
+  .pg { width: 12px; height: 16px; border-radius: 2px; background: var(--bg); border: 1px dashed var(--border); }
+  .pg.res { background: var(--c-green); border: 1px solid var(--c-green); }
+
+  .flow { display: flex; flex-direction: column; gap: 4px; max-width: 600px; }
+  .fnode { border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; font-size: 14px; background: var(--bg); opacity: .4; transition: opacity .2s; }
+  .fnode.on { opacity: 1; border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+  .fnode .ans { float: right; font: 600 12px var(--mono); }
+  .farrow { text-align: center; color: var(--muted); font-size: 12px; line-height: 1; }
+  .outcome { display: inline-block; font: 600 14px var(--mono); padding: 6px 10px; border-radius: 6px; }
+  .outcome.minor { background: var(--c-green-soft); color: var(--c-green); }
+  .outcome.major { background: var(--c-amber-soft); color: var(--c-amber); }
+  .outcome.segv { background: var(--c-red-soft); color: var(--c-red); }
+  .outcome.fast { background: var(--c-blue-soft); color: var(--c-blue); }
+
+  .vbar { height: 28px; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; display: flex; background: var(--bg); max-width: 640px; }
+  .vbar > div { display: flex; align-items: center; justify-content: center; font: 12px var(--mono); white-space: nowrap; overflow: hidden; }
+  .matrix2 { display: grid; grid-template-columns: 110px 1fr 1fr; gap: 6px; max-width: 720px; font-size: 13px; }
+  .matrix2 .hd { font-weight: 600; text-align: center; align-self: end; }
+  .matrix2 button { text-align: left; padding: 10px; font-size: 13px; line-height: 1.4; white-space: normal; }
+  .matrix2 button.primary { color: #fff; }
+
+  .pcache { display: flex; gap: 6px; flex-wrap: wrap; }
+  .pc { width: 70px; border-radius: 8px; border: 1px solid var(--border); background: var(--bg); padding: 6px; font: 11px var(--mono); text-align: center; cursor: pointer; }
+  .pc.clean { background: var(--c-green-soft); border-color: var(--c-green); }
+  .pc.dirty { background: var(--c-amber-soft); border-color: var(--c-amber); }
+  .pc.lost { background: var(--c-red-soft); border-color: var(--c-red); }
+  .pc .t { font-size: 12px; font-weight: 600; }
+
+  .lru { display: grid; grid-template-columns: 80px 1fr; gap: 8px 10px; align-items: center; }
+  .lrulist { display: flex; gap: 4px; flex-wrap: wrap; min-height: 36px; padding: 4px; border: 1px dashed var(--border); border-radius: 6px; background: var(--bg); }
+  .lp { width: 40px; height: 30px; border-radius: 5px; font: 11px var(--mono); display: flex; align-items: center; justify-content: center; border: 1px solid var(--border); cursor: pointer; padding: 0; color: var(--text); }
+  .lp.file { background: var(--c-amber-soft); } .lp.anon { background: var(--c-blue-soft); }
+  .lp.acc { box-shadow: inset 0 -4px 0 var(--c-green); }
+  .gauge { position: relative; height: 26px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); max-width: 520px; overflow: hidden; }
+  .gauge .fill { position: absolute; left: 0; top: 0; bottom: 0; background: var(--c-green-soft); }
+  .gauge .wm { position: absolute; top: 0; bottom: 0; width: 2px; }
+  .gauge .wl { position: absolute; top: 3px; font: 10px var(--mono); transform: translateX(4px); }
+  .procs { display: grid; grid-template-columns: 90px 1fr 80px 120px; gap: 6px 10px; align-items: center; font-size: 13px; max-width: 720px; }
+  .procbar { height: 20px; border-radius: 4px; background: var(--c-blue); }
+  .procbar.dead { background: var(--c-red-soft); }
+  .ksm { display: grid; grid-template-columns: 50px repeat(8, 26px); gap: 3px; font: 11px var(--mono); align-items: center; }
+  .kp { width: 26px; height: 26px; border-radius: 4px; display: flex; align-items: center; justify-content: center; color: #fff; font-weight: 600; }
+  .kp.merged { outline: 2px solid var(--text); outline-offset: -2px; }
+  @media (max-width: 600px) { section.card { padding: 14px; } .matrix2 { grid-template-columns: 70px 1fr 1fr; } .procs { grid-template-columns: 70px 1fr 60px; } .procs .adj { grid-column: 1 / -1; } }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+<button class="theme-btn" id="themeBtn" type="button" aria-label="Toggle dark mode"></button>
+
+<header class="top">
+  <a class="backlink" href="../#6-memory-management">← Back to the notes: Part 6</a>
+  <h1>Memory Management, Visualized</h1>
+  <p>Allocate frames, walk the page tables, take page faults, lose dirty pages to a power cut, and watch the OOM killer choose.</p>
+</header>
+
+<nav class="chips" aria-label="Sections"><div class="inner" id="chips"></div></nav>
+
+<main>
+
+<!-- 6.1 ------------------------------------------------------------------>
+<section class="card" id="s6-1" data-title="6.1 Physical">
+  <h2><span class="num">6.1</span>Physical Memory</h2>
+  <p class="lead">RAM is an array of 4 KiB page frames. Free RAM is wasted RAM, so the kernel fills it with page cache and gives it back on demand. Click a frame to see its <code>struct page</code>.</p>
+  <div class="demo">
+    <div class="row">
+      <button type="button" id="phCat">cat bigfile (page cache grows)</button>
+      <button type="button" id="phAlloc">an app needs 12 frames</button>
+      <button type="button" id="phDrop">echo 3 &gt; drop_caches</button>
+      <button type="button" id="phReset">Reset</button>
+    </div>
+    <div class="frames" id="phFrames" style="margin-top:12px"></div>
+    <div class="legend" style="margin-top:8px"><span style="--sw: var(--c-purple-soft)">kernel</span><span style="--sw: var(--c-blue-soft)">process A</span><span style="--sw: var(--c-pink-soft)">process B</span><span style="--sw: var(--c-amber-soft)">page cache</span><span style="--sw: var(--bg)">free</span></div>
+    <div class="row" id="phStats" style="margin-top:10px"></div>
+    <pre class="log" id="phPage" style="margin-top:10px"></pre>
+    <p class="hint" style="margin:6px 0 0">Scaled down: 64 frames. "available" ≈ free + page cache that can be dropped, the number that matters in <code>free -h</code>.</p>
+  </div>
+  <div class="connect">Connection: every allocation, mapping, fault and reclaim decision starts by finding the frame (PFN) and updating its <code>struct page</code> (6.2).</div>
+</section>
+
+<!-- 6.2 ------------------------------------------------------------------>
+<section class="card" id="s6-2" data-title="6.2 Allocators">
+  <h2><span class="num">6.2</span><code>struct page</code>, Buddy and Slab Allocators</h2>
+  <p class="lead">The buddy allocator hands out physically contiguous power-of-two blocks of pages; the slab allocator carves pages into small same-sized kernel objects.</p>
+  <div class="demo">
+    <h3>Buddy allocator (16 pages, orders 0–4)</h3>
+    <div class="row">
+      <span class="hint">allocate:</span>
+      <button type="button" data-bo="0">order 0 (1 page)</button><button type="button" data-bo="1">order 1 (2)</button>
+      <button type="button" data-bo="2">order 2 (4)</button><button type="button" data-bo="3">order 3 (8)</button>
+      <button type="button" id="buReset">Reset</button>
+    </div>
+    <div class="buddy" id="buBar" style="margin-top:12px"></div>
+    <p class="hint" style="margin:6px 0 10px">Click an allocated block to free it and watch it merge with its buddy.</p>
+    <div class="row" style="align-items:flex-start; gap:20px">
+      <div class="orders" id="buLists"></div>
+      <div class="log" id="buLog" style="flex:1; min-width:260px"></div>
+    </div>
+  </div>
+  <div class="demo">
+    <h3>Slab caches: pages carved into objects</h3>
+    <div class="row">
+      <label class="inline">cache <select id="slCache"><option value="dentry">dentry (192 B → 21 per 4 KiB slab)</option><option value="k64">kmalloc-64 (64 per slab)</option></select></label>
+      <button type="button" id="slAlloc" class="primary">alloc ×5</button><button type="button" id="slFree">free ×5</button>
+    </div>
+    <div class="row" id="slSlabs" style="margin-top:12px; gap:8px"></div>
+    <div class="row" id="slStats" style="margin-top:10px"></div>
+  </div>
+  <div class="demo">
+    <h3>Zones and NUMA nodes</h3>
+    <div class="vbar"><div style="flex:2; background: var(--c-red-soft)" title="ZONE_DMA: first 16 MB">DMA</div><div style="flex:3; background: var(--c-amber-soft)" title="ZONE_DMA32: below 4 GB">DMA32 &lt;4 GB</div><div style="flex:7; background: var(--c-green-soft)">NORMAL: everything else</div></div>
+    <div class="row" style="margin-top:12px">
+      <button type="button" id="nuLocal" class="primary">CPU 3 reads node 0 memory</button>
+      <button type="button" id="nuRemote">CPU 3 reads node 1 memory</button>
+    </div>
+    <svg id="nuSvg" viewBox="0 0 560 150" style="width:100%; max-width:560px; margin-top:10px" role="img" aria-label="NUMA diagram"></svg>
+    <p id="nuMsg" style="margin:4px 0 0"></p>
+  </div>
+  <div class="connect">Connection: the dentry and inode caches of the VFS (7.3) are slab caches. Fragmented buddy lists are why huge pages can be hard to get (6.9).</div>
+</section>
+
+<!-- 6.3 ------------------------------------------------------------------>
+<section class="card" id="s6-3" data-title="6.3 Virtual memory">
+  <h2><span class="num">6.3</span>Virtual Memory and the Page Walk</h2>
+  <p class="lead">Processes only ever use virtual addresses. Each has its own page tables, so the same address can mean different RAM.</p>
+  <div class="demo">
+    <h3>Same virtual address, two processes</h3>
+    <div class="row"><button type="button" id="vaPriv" class="primary">a private data page</button><button type="button" id="vaShared">libc code page (shared)</button></div>
+    <svg id="vaSvg" viewBox="0 0 600 190" style="width:100%; max-width:600px; margin-top:10px" role="img" aria-label="two processes mapping virtual to physical"></svg>
+  </div>
+  <div class="demo">
+    <h3>The 4-level page walk (x86-64, 48-bit)</h3>
+    <div class="row">
+      <input type="text" id="pwIn" class="mono" size="20" value="0x7f8010203456" aria-label="virtual address">
+      <button type="button" id="pwGo" class="primary">Translate</button>
+      <button type="button" id="pwFlush">Flush TLB</button>
+      <button type="button" data-pw="0x7f8010203456">0x7f8010203456</button>
+      <button type="button" data-pw="0x7f8010203abc">same page, other offset</button>
+      <button type="button" data-pw="0x55d0c1a02000">0x55d0c1a02000</button>
+    </div>
+    <div class="split" id="pwSplit" style="margin-top:12px"></div>
+    <div class="walk" id="pwWalk" style="margin-top:12px"></div>
+    <div class="row" style="margin-top:12px">
+      <div class="stat"><span class="k">memory reads for translation</span><span class="v" id="pwReads">0</span></div>
+      <div class="stack" style="gap:4px"><span class="hint">TLB (4 entries, FIFO):</span><div class="tlb" id="pwTlb"></div></div>
+    </div>
+    <p id="pwMsg" style="margin:8px 0 0; font-weight:600"></p>
+    <p class="hint" style="margin:4px 0 0">Table addresses for the default address are the ones used in the notes; for other addresses they are illustrative.</p>
+  </div>
+  <div class="demo">
+    <h3>Page-table entry flags: what does the hardware allow?</h3>
+    <div class="pte" id="pteBits"></div>
+    <div class="row" style="margin-top:12px">
+      <span class="hint">access:</span>
+      <button type="button" data-acc="ur">user read</button><button type="button" data-acc="uw">user write</button>
+      <button type="button" data-acc="ux">user execute</button><button type="button" data-acc="kr">kernel read</button>
+    </div>
+    <p id="pteOut" style="margin:10px 0 0; font-weight:600"></p>
+    <p class="hint" id="pteExplain" style="margin:4px 0 0"></p>
+  </div>
+  <div class="connect">Connection: changing CR3 switches the whole address space, which is what a context switch between processes does (3.5). The TLB (2.4) is what makes this affordable.</div>
+</section>
+
+<!-- 6.4 ------------------------------------------------------------------>
+<section class="card" id="s6-4" data-title="6.4 VMAs">
+  <h2><span class="num">6.4</span>VMAs vs Page Tables</h2>
+  <p class="lead">VMAs (what the kernel allows, <code>/proc/&lt;pid&gt;/maps</code>) can be large while very few pages are actually present in the page tables. Click a line.</p>
+  <div class="demo">
+    <div style="overflow-x:auto"><table class="maps" id="vmMaps"></table></div>
+    <div class="row" style="margin-top:12px; align-items:flex-start; gap:20px">
+      <div class="stack" style="flex:1; min-width:280px"><b id="vmTitle"></b><div class="pages" id="vmPages"></div><div class="hint" id="vmInfo"></div></div>
+      <table class="mem" style="max-width:420px">
+        <tr><th></th><th>VMA</th><th>page table</th></tr>
+        <tr><td>read by</td><td>kernel</td><td>MMU</td></tr>
+        <tr><td>unit</td><td>region</td><td>page</td></tr>
+        <tr><td>says</td><td>what is allowed, where data comes from</td><td>what is in RAM right now</td></tr>
+        <tr><td>created by</td><td>execve, mmap, brk</td><td>page faults, lazily</td></tr>
+      </table>
+    </div>
+    <div class="legend" style="margin-top:8px"><span style="--sw: var(--c-green)">page present (resident, in RSS)</span><span style="--sw: var(--bg)">in the VMA, not present yet</span></div>
+    <p class="hint" style="margin:4px 0 0">Resident patterns are illustrative.</p>
+  </div>
+  <div class="connect">Connection: <code>task_struct → mm_struct → VMAs + pgd</code>. Threads share one <code>mm_struct</code> (5.1); kernel threads have none.</div>
+</section>
+
+<!-- 6.5 ------------------------------------------------------------------>
+<section class="card" id="s6-5" data-title="6.5 Page faults">
+  <h2><span class="num">6.5</span>Page Faults</h2>
+  <p class="lead">Most page faults are normal: the kernel's lazy strategies working as designed. Pick a scenario and follow the decision path.</p>
+  <div class="demo">
+    <div class="row" id="pfBtns" style="gap:6px"></div>
+    <div class="flow" id="pfFlow" style="margin-top:12px"></div>
+    <div class="row" style="margin-top:12px"><span id="pfOut"></span><span class="hint" id="pfCost"></span></div>
+  </div>
+  <div class="demo">
+    <h3>Demand paging: malloc promises, page faults deliver</h3>
+    <div class="row">
+      <button type="button" id="dpMalloc" class="primary">p = malloc(1 GiB)</button>
+      <label class="inline">touch the first <input type="range" id="dpTouch" min="0" max="1024" value="0" disabled> <b class="mono" id="dpTouchV">0 MiB</b></label>
+    </div>
+    <div class="vbar" id="dpBar" style="margin-top:12px"></div>
+    <div class="row" id="dpStats" style="margin-top:10px"></div>
+  </div>
+  <div class="demo">
+    <h3>Copy-on-write after fork()</h3>
+    <div class="row">
+      <button type="button" id="cwFork" class="primary">fork()</button>
+      <button type="button" id="cwChildB">child writes page B</button>
+      <button type="button" id="cwParentC">parent writes page C</button>
+      <button type="button" id="cwExec">child calls execve()</button>
+      <button type="button" id="cwReset">Reset</button>
+    </div>
+    <div style="overflow-x:auto; margin-top:12px"><table class="mem" id="cwTable"></table></div>
+    <p id="cwMsg" style="margin:8px 0 0"></p>
+  </div>
+  <div class="connect">Connection: a fault is a restartable CPU exception (3.4): the kernel fixes the page table and the same instruction runs again. A segfault is the case where the VMA check fails, sent as SIGSEGV (8.2).</div>
+</section>
+
+<!-- 6.6 ------------------------------------------------------------------>
+<section class="card" id="s6-6" data-title="6.6 mmap">
+  <h2><span class="num">6.6</span>Memory Mapping (<code>mmap</code>)</h2>
+  <p class="lead"><code>mmap()</code> creates a VMA and returns immediately. Two questions decide its behaviour: backed by a file or not, private or shared.</p>
+  <div class="demo">
+    <div class="matrix2" id="mmGrid">
+      <div></div><div class="hd">MAP_PRIVATE</div><div class="hd">MAP_SHARED</div>
+    </div>
+    <p id="mmText" style="margin:12px 0 0"></p>
+  </div>
+  <div class="demo">
+    <h3>malloc(): heap (brk) or a fresh mmap?</h3>
+    <label class="inline">malloc( <input type="range" id="maSize" min="0" max="100" value="40"> <b class="mono" id="maSizeV"></b> )</label>
+    <div class="row" style="margin-top:12px; align-items:flex-start; gap:16px">
+      <div class="box" id="maHeap" style="min-width:200px"><h4>[heap] via brk()</h4><div>small allocations from free lists; brk moves the heap end when it runs out</div></div>
+      <div class="box" id="maMmap" style="min-width:200px"><h4>anonymous mmap()</h4><div>its own VMA; free() → munmap() returns it to the kernel immediately</div></div>
+    </div>
+    <pre class="log" id="maOut" style="margin-top:10px"></pre>
+    <p class="hint" style="margin:4px 0 0">glibc's default threshold is M_MMAP_THRESHOLD = 128 KiB (adjusted dynamically at runtime).</p>
+  </div>
+  <div class="connect">Connection: executables and shared libraries are private file mappings of page-cache pages (4.9, 6.7); POSIX shared memory is a shared mapping of a tmpfs file (9.3).</div>
+</section>
+
+<!-- 6.7 ------------------------------------------------------------------>
+<section class="card" id="s6-7" data-title="6.7 Page cache">
+  <h2><span class="num">6.7</span>Page Cache, Dirty Pages and Writeback</h2>
+  <p class="lead"><code>write()</code> only dirties a page in RAM. The disk gets it later, unless you call <code>fsync()</code>. Click a page to read it; shift-click or use the button to write.</p>
+  <div class="demo">
+    <div class="row">
+      <label class="inline">page <select id="pcPage"></select></label>
+      <button type="button" id="pcRead">read()</button>
+      <button type="button" id="pcWrite" class="primary">write()</button>
+      <button type="button" id="pcTick">+10 s</button>
+      <button type="button" id="pcFsync">fsync()</button>
+      <button type="button" id="pcPower" style="border-color: var(--c-red); color: var(--c-red)">⚡ power loss</button>
+      <button type="button" id="pcReset">Reset</button>
+    </div>
+    <div class="row" style="margin-top:12px; align-items:flex-start; gap:20px">
+      <div class="stack" style="gap:4px"><b style="font-size:13px">page cache (RAM)</b><div class="pcache" id="pcCache"></div></div>
+    </div>
+    <div class="stack" style="gap:4px; margin-top:10px"><b style="font-size:13px">disk</b><div class="pcache" id="pcDisk"></div></div>
+    <div class="row" id="pcStats" style="margin-top:10px"></div>
+    <div class="log" id="pcLog" style="margin-top:10px"></div>
+    <div class="legend" style="margin-top:6px"><span style="--sw: var(--c-green-soft)">cached, clean</span><span style="--sw: var(--c-amber-soft)">dirty (newer than disk)</span><span style="--sw: var(--c-red-soft)">write lost</span></div>
+    <p class="hint" style="margin:4px 0 0">Dirty pages are written back after ~30 s (<code>dirty_expire_centisecs</code>). Version numbers stand in for the data.</p>
+  </div>
+  <div class="connect">Connection: the same write-back idea as CPU caches (2.4), one level up. Journaling (7.15) keeps the filesystem consistent, but only fsync makes your data durable.</div>
+</section>
+
+<!-- 6.8 ------------------------------------------------------------------>
+<section class="card" id="s6-8" data-title="6.8 Reclaim & OOM">
+  <h2><span class="num">6.8</span>Reclaim, Overcommit and the OOM Killer</h2>
+  <p class="lead">When free memory runs low, kswapd evicts pages that haven't been used recently. When nothing can be freed, the OOM killer picks a victim.</p>
+  <div class="demo">
+    <h3>LRU lists and watermarks</h3>
+    <div class="row">
+      <button type="button" id="lrAlloc" class="primary">allocate 4 pages</button>
+      <button type="button" id="lrAccess">touch 3 random pages</button>
+      <button type="button" id="lrReset">Reset</button>
+      <span class="hint">Click a page to touch it (sets the Accessed bit).</span>
+    </div>
+    <div class="gauge" id="lrGauge" style="margin-top:12px"></div>
+    <div class="lru" style="margin-top:10px">
+      <b style="font-size:13px">active</b><div class="lrulist" id="lrActive"></div>
+      <b style="font-size:13px">inactive</b><div class="lrulist" id="lrInactive"></div>
+    </div>
+    <div class="legend" style="margin-top:6px"><span style="--sw: var(--c-amber-soft)">file page (just drop if clean)</span><span style="--sw: var(--c-blue-soft)">anon page (needs swap)</span><span style="--sw: var(--c-green)">green underline = Accessed bit set</span></div>
+    <div class="log" id="lrLog" style="margin-top:10px"></div>
+  </div>
+  <div class="demo">
+    <h3>Overcommit: does malloc() succeed?</h3>
+    <div class="row">
+      <label class="inline">malloc( <input type="range" id="ocSize" min="1" max="100" value="100" style="width:180px"> <b class="mono" id="ocSizeV"></b> )</label>
+      <label class="inline">vm.overcommit_memory <select id="ocMode"><option value="0">0 heuristic</option><option value="1">1 always</option><option value="2">2 never</option></select></label>
+      <label class="inline">swap <select id="ocSwap"><option value="0">none</option><option value="2">2 GB</option></select></label>
+    </div>
+    <p id="ocOut" style="margin:10px 0 0; font-weight:600"></p>
+    <p class="hint" id="ocWhy" style="margin:4px 0 0"></p>
+    <p class="hint" style="margin:4px 0 0">Machine: 16 GB RAM. Simplified: ignores memory already committed by other processes.</p>
+  </div>
+  <div class="demo">
+    <h3>OOM killer: highest oom_score dies</h3>
+    <div class="row"><button type="button" id="ooGrow" class="primary">java touches +8% more RAM</button><button type="button" id="ooReset">Reset</button></div>
+    <div class="procs" id="ooProcs" style="margin-top:12px"></div>
+    <div class="row" id="ooStats" style="margin-top:10px"></div>
+    <p id="ooMsg" style="margin:8px 0 0; font-weight:600"></p>
+    <p class="hint" style="margin:4px 0 0">Scaled model: 100 units of RAM, no swap. Score ≈ memory share × 10 + oom_score_adj (−1000 never kills).</p>
+  </div>
+  <div class="connect">Connection: the Accessed bit comes from the PTE (6.3). The OOM kill is a SIGKILL (8.2), so the shell or container runtime reports exit 137 (4.9, 10.2).</div>
+</section>
+
+<!-- 6.9 ------------------------------------------------------------------>
+<section class="card" id="s6-9" data-title="6.9 Huge pages">
+  <h2><span class="num">6.9</span>Huge Pages and TLB Reach</h2>
+  <p class="lead">TLB reach = entries × page size. Bigger pages mean one entry covers more memory, and the page walk stops earlier.</p>
+  <div class="demo">
+    <div class="row">
+      <label class="inline">TLB entries <select id="hpEnt"><option value="64">64 (L1 dTLB)</option><option value="2048" selected>2,048 (L2 TLB)</option></select></label>
+      <label class="inline">page size <select id="hpSize"><option value="4096">4 KiB</option><option value="2097152">2 MiB</option><option value="1073741824">1 GiB</option></select></label>
+      <label class="inline">working set <input type="range" id="hpWs" min="0" max="100" value="60" style="width:180px"> <b class="mono" id="hpWsV"></b></label>
+    </div>
+    <div class="row" id="hpStats" style="margin-top:12px"></div>
+    <div class="vbar" id="hpBar" style="margin-top:10px"></div>
+    <div class="split" id="hpWalk" style="margin-top:12px"></div>
+  </div>
+  <div class="connect">Connection: huge pages need physically contiguous order-9 (2 MiB) blocks from the buddy allocator (6.2), and matter even more inside VMs (2.6).</div>
+</section>
+
+<!-- 6.10 ----------------------------------------------------------------->
+<section class="card" id="s6-10" data-title="6.10 zswap / KSM">
+  <h2><span class="num">6.10</span>zswap, zram and KSM</h2>
+  <p class="lead">Trade a little CPU for a lot of RAM: compress pages instead of writing them to disk, or merge identical pages.</p>
+  <div class="demo">
+    <h3>zram: compressed RAM as a swap device</h3>
+    <div class="row">
+      <label class="inline">swapped-out data <input type="range" id="zrData" min="1" max="8" value="4" style="width:140px"> <b class="mono" id="zrDataV"></b></label>
+      <label class="inline">compression ratio <input type="range" id="zrRatio" min="10" max="40" value="30" style="width:140px"> <b class="mono" id="zrRatioV"></b></label>
+    </div>
+    <div class="vbar" id="zrBar" style="margin-top:12px"></div>
+    <p class="hint" id="zrText" style="margin:6px 0 0"></p>
+    <p class="hint" style="margin:4px 0 0">zswap is the same idea as a cache in front of a real swap device: compress first, write to disk only when its pool is full.</p>
+  </div>
+  <div class="demo">
+    <h3>KSM: four VMs with many identical pages</h3>
+    <div class="row"><button type="button" id="ksRun" class="primary">run ksmd (merge identical pages)</button><button type="button" id="ksWrite">VM 2 writes page 0</button><button type="button" id="ksReset">Reset</button></div>
+    <div class="ksm" id="ksGrid" style="margin-top:12px"></div>
+    <div class="row" id="ksStats" style="margin-top:10px"></div>
+    <p class="hint" id="ksMsg" style="margin:4px 0 0">Same letter = same content. Outlined = a merged, shared read-only page.</p>
+  </div>
+  <div class="connect">Connection: zram is a block device (7.12) used as swap (6.8); a write to a KSM-merged page is an ordinary copy-on-write fault (6.5).</div>
+</section>
+
+</main>
+
+<footer class="pnav">
+  <a href="part5-threads.html">← Part 5: Threads</a>
+  <a href="index.html">All visuals</a>
+  <a href="part7-files.html">Part 7: Files and I/O →</a>
+</footer>
+
+<script>
+(function () {
+  'use strict';
+  const $ = (id) => document.getElementById(id);
+  const h = (tag, props, ...kids) => {
+    const n = document.createElement(tag);
+    if (props) for (const k in props) {
+      if (k === 'class') n.className = props[k];
+      else if (k === 'style') n.style.cssText = props[k];
+      else if (k.startsWith('on')) n.addEventListener(k.slice(2), props[k]);
+      else n.setAttribute(k, props[k]);
+    }
+    for (const kid of kids.flat()) if (kid != null) n.append(kid);
+    return n;
+  };
+  const NS = 'http://www.w3.org/2000/svg';
+  const sv = (tag, attrs, text) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (text != null) e.textContent = text; return e; };
+  const hex = (n, w) => n.toString(16).toUpperCase().padStart(w || 0, '0');
+  const setPrimary = (on, offs) => { on.classList.add('primary'); offs.forEach((b) => b.classList.remove('primary')); };
+  const stat = (k, v, cls) => h('div', { class: 'stat' }, h('span', { class: 'k' }, k), h('span', { class: 'v' + (cls ? ' ' + cls : '') }, String(v)));
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  /* ---------- theme + chips ---------- */
+  const themeBtn = $('themeBtn');
+  function applyTheme(t) {
+    document.documentElement.setAttribute('data-theme', t);
+    themeBtn.innerHTML = t === 'dark' ? '&#9728;' : '&#9790;';
+    themeBtn.title = t === 'dark' ? 'Switch to light mode' : 'Switch to dark mode';
+  }
+  applyTheme(document.documentElement.getAttribute('data-theme'));
+  themeBtn.addEventListener('click', () => {
+    const t = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+    try { localStorage.setItem('theme', t); } catch (e) {}
+    applyTheme(t);
+  });
+  const chips = $('chips');
+  const sections = [...document.querySelectorAll('section.card')];
+  sections.forEach((s) => chips.append(h('a', { href: '#' + s.id }, s.dataset.title)));
+  const chipLinks = [...chips.children];
+  const io = new IntersectionObserver((es) => es.forEach((e) => {
+    if (e.isIntersecting) chipLinks.forEach((a) => a.classList.toggle('active', a.getAttribute('href') === '#' + e.target.id));
+  }), { rootMargin: '-45% 0px -50% 0px' });
+  sections.forEach((s) => io.observe(s));
+
+  /* ---------- 6.1 frames ---------- */
+  let frames, selFrame = 5;
+  function phReset() {
+    frames = [];
+    for (let i = 0; i < 64; i++) frames.push(i < 6 ? 'kernel' : i < 16 ? 'procA' : i < 24 ? 'procB' : i < 40 ? 'cache' : 'free');
+    phDraw();
+  }
+  const PAGEINFO = {
+    kernel: 'flags = PG_reserved\n_refcount = 1   _mapcount = -1 (not mapped by user page tables)\nmapping = NULL  (kernel code/data)',
+    procA: 'flags = PG_lru | PG_swapbacked\n_refcount = 1   _mapcount = 0 (mapped once)\nmapping = anon_vma of process A  (heap/stack page)',
+    procB: 'flags = PG_lru | PG_swapbacked | PG_dirty\n_refcount = 1   _mapcount = 0\nmapping = anon_vma of process B',
+    cache: 'flags = PG_lru | PG_uptodate\n_refcount = 1   _mapcount = -1 (cached, not mapped)\nmapping = address_space of an inode   index = page offset in the file',
+    free: 'flags = (on a buddy free list, PG_buddy)\n_refcount = 0\nmapping = NULL',
+  };
+  function phDraw() {
+    const box = $('phFrames');
+    box.innerHTML = '';
+    frames.forEach((t, i) => box.append(h('button', { type: 'button', class: 'fr ' + t + (i === selFrame ? ' sel' : ''), title: `frame ${i}: ${t}`,
+      onclick: () => { selFrame = i; phDraw(); } }, String(i))));
+    const c = (t) => frames.filter((x) => x === t).length;
+    const used = c('kernel') + c('procA') + c('procB');
+    $('phStats').innerHTML = '';
+    $('phStats').append(stat('total', '64'), stat('used', used), stat('buff/cache', c('cache')), stat('free', c('free')), stat('available', c('free') + c('cache'), 'ok'));
+    const pfn = selFrame;
+    $('phPage').textContent = `struct page for frame #${pfn}   (PFN 0x${hex(pfn)}, physical address 0x${hex(pfn * 4096, 5)})\n` + PAGEINFO[frames[pfn]];
+  }
+  $('phCat').addEventListener('click', () => { let n = 8; frames = frames.map((t) => (t === 'free' && n-- > 0 ? 'cache' : t)); phDraw(); });
+  $('phAlloc').addEventListener('click', () => {
+    let need = 12;
+    frames = frames.map((t) => (t === 'free' && need > 0 ? (need--, 'procB') : t));
+    frames = frames.map((t) => (t === 'cache' && need > 0 ? (need--, 'procB') : t));    // reclaim clean cache
+    phDraw();
+  });
+  $('phDrop').addEventListener('click', () => { frames = frames.map((t) => (t === 'cache' ? 'free' : t)); phDraw(); });
+  $('phReset').addEventListener('click', phReset);
+  phReset();
+
+  /* ---------- 6.2 buddy ---------- */
+  let bu;
+  function buReset() { bu = { free: [[], [], [], [], [0]], used: {}, log: ['16 pages free as one order-4 block.'], flash: null, nextId: 1 }; buDraw(); }
+  function buAlloc(order) {
+    let k = order;
+    while (k <= 4 && !bu.free[k].length) k++;
+    if (k > 4) { bu.log.push(`alloc order ${order}: FAILED, no free block big enough (fragmentation?)`); return buDraw(); }
+    bu.free[k].sort((a, b) => a - b);
+    let start = bu.free[k].shift();
+    while (k > order) {
+      k--;
+      const buddy = start + (1 << k);
+      bu.free[k].push(buddy);
+      bu.log.push(`split order ${k + 1} block @${start} → two order-${k}: @${start} and @${buddy} (buddy goes to free list ${k})`);
+    }
+    bu.used[start] = { order, id: bu.nextId++ };
+    bu.flash = start;
+    bu.log.push(`allocated order ${order} @ page ${start}`);
+    buDraw();
+  }
+  function buFree(start) {
+    let order = bu.used[start].order;
+    delete bu.used[start];
+    bu.log.push(`free order ${order} @ page ${start}`);
+    while (order < 4) {
+      const buddy = start ^ (1 << order);
+      const idx = bu.free[order].indexOf(buddy);
+      if (idx === -1) { bu.log.push(`  buddy @${buddy} is not free → stop`); break; }
+      bu.free[order].splice(idx, 1);
+      bu.log.push(`  buddy @${buddy} is free → merge into order ${order + 1} @${Math.min(start, buddy)}`);
+      start = Math.min(start, buddy);
+      order++;
+    }
+    bu.free[order].push(start);
+    bu.flash = start;
+    buDraw();
+  }
+  function buDraw() {
+    const blocks = [];
+    for (let o = 0; o <= 4; o++) bu.free[o].forEach((s) => blocks.push({ s, o, used: false }));
+    for (const s in bu.used) blocks.push({ s: +s, o: bu.used[s].order, used: true, id: bu.used[s].id });
+    blocks.sort((a, b) => a.s - b.s);
+    const bar = $('buBar');
+    bar.innerHTML = '';
+    blocks.forEach((b) => {
+      const el = h('button', { type: 'button', class: 'bk ' + (b.used ? 'used' : 'free') + (b.s === bu.flash ? ' flash' : ''), style: `flex:${1 << b.o}`,
+        title: `${b.used ? 'allocated' : 'free'} order ${b.o} block at page ${b.s}` }, h('b', null, b.used ? '#' + b.id : 'free'), `@${b.s} o${b.o}`);
+      if (b.used) el.addEventListener('click', () => buFree(b.s)); else el.disabled = true;
+      bar.append(el);
+    });
+    const lists = $('buLists');
+    lists.innerHTML = '';
+    for (let o = 0; o <= 4; o++) lists.append(h('span', null, `order ${o} (${1 << o}p)`), h('span', null, bu.free[o].length ? bu.free[o].slice().sort((a, b) => a - b).map((s) => '@' + s).join(' ') : '—'));
+    $('buLog').textContent = bu.log.slice(-8).join('\n');
+    $('buLog').scrollTop = 1e6;
+  }
+  document.querySelectorAll('[data-bo]').forEach((b) => b.addEventListener('click', () => buAlloc(+b.dataset.bo)));
+  $('buReset').addEventListener('click', buReset);
+  buReset();
+
+  /* ---------- 6.2 slab ---------- */
+  const SL = { dentry: { per: 21, cls: '' }, k64: { per: 64, cls: 'k64' } };
+  let slab = { dentry: [], k64: [] };
+  function slDraw() {
+    const name = $('slCache').value, conf = SL[name], slabs = slab[name];
+    const box = $('slSlabs');
+    box.innerHTML = '';
+    if (!slabs.length) box.append(h('span', { class: 'hint' }, 'No slabs yet: the first allocation takes a page from the buddy allocator.'));
+    slabs.forEach((cnt) => {
+      const g = h('div', { class: 'slab ' + conf.cls, title: `${cnt}/${conf.per} objects in use` });
+      for (let i = 0; i < conf.per; i++) g.append(h('div', { class: 'obj' + (i < cnt ? ' on' : '') }));
+      box.append(g);
+    });
+    const used = slabs.reduce((a, b) => a + b, 0);
+    $('slStats').innerHTML = '';
+    $('slStats').append(stat('objects in use', used), stat('slabs (pages from buddy)', slabs.length), stat('free slots', slabs.length * conf.per - used));
+  }
+  $('slAlloc').addEventListener('click', () => {
+    const name = $('slCache').value, per = SL[name].per, s = slab[name];
+    for (let k = 0; k < 5; k++) { const i = s.findIndex((c) => c < per); if (i === -1) s.push(1); else s[i]++; }
+    slDraw();
+  });
+  $('slFree').addEventListener('click', () => {
+    const s = slab[$('slCache').value];
+    for (let k = 0; k < 5 && s.length; k++) { s[s.length - 1]--; if (s[s.length - 1] === 0) s.pop(); }
+    slDraw();
+  });
+  $('slCache').addEventListener('change', slDraw);
+  slDraw();
+
+  /* ---------- 6.2 NUMA ---------- */
+  function nuDraw(remote) {
+    const svg = $('nuSvg');
+    svg.innerHTML = '';
+    [[20, 'node 0', 'CPUs 0-3', 'RAM 128 GB'], [320, 'node 1', 'CPUs 4-7', 'RAM 128 GB']].forEach(([x, n, c, r]) => {
+      svg.append(sv('rect', { x, y: 10, width: 220, height: 130, rx: 10, fill: 'var(--surface-2)', stroke: 'var(--border)' }));
+      svg.append(sv('text', { x: x + 10, y: 30, 'font-size': 13, fill: 'var(--muted)' }, n));
+      svg.append(sv('rect', { x: x + 20, y: 44, width: 80, height: 40, rx: 6, fill: 'var(--c-blue-soft)', stroke: 'var(--c-blue)' }));
+      svg.append(sv('text', { x: x + 60, y: 68, 'text-anchor': 'middle', 'font-size': 12, fill: 'var(--text)' }, c));
+      svg.append(sv('rect', { x: x + 120, y: 44, width: 80, height: 80, rx: 6, fill: 'var(--c-green-soft)', stroke: 'var(--c-green)' }));
+      svg.append(sv('text', { x: x + 160, y: 88, 'text-anchor': 'middle', 'font-size': 12, fill: 'var(--text)' }, r));
+    });
+    const path = remote ? 'M 80 84 C 80 135, 480 135, 480 124' : 'M 80 84 C 80 110, 160 110, 140 100';
+    svg.append(sv('path', { d: path, fill: 'none', stroke: remote ? 'var(--c-red)' : 'var(--c-green)', 'stroke-width': 3, 'stroke-dasharray': '6 4' }));
+    svg.append(sv('line', { x1: 240, y1: 64, x2: 320, y2: 64, stroke: 'var(--muted)', 'stroke-width': 3 }));
+    svg.append(sv('text', { x: 280, y: 56, 'text-anchor': 'middle', 'font-size': 10, fill: 'var(--muted)' }, 'UPI / IF'));
+    $('nuMsg').textContent = remote ? 'Remote access: node distance 21 vs 10 → roughly 2.1× the cost. The scheduler avoids moving tasks away from their memory (3.6).' : 'Local access: distance 10. Linux allocates on the requesting CPU\'s node by default ("first touch").';
+    $('nuMsg').className = remote ? 'bad' : 'ok';
+  }
+  $('nuLocal').addEventListener('click', () => { setPrimary($('nuLocal'), [$('nuRemote')]); nuDraw(false); });
+  $('nuRemote').addEventListener('click', () => { setPrimary($('nuRemote'), [$('nuLocal')]); nuDraw(true); });
+  nuDraw(false);
+
+  /* ---------- 6.3 two processes ---------- */
+  function vaDraw(shared) {
+    const svg = $('vaSvg');
+    svg.innerHTML = '';
+    const box = (x, y, w, t, sub, fill, stroke) => {
+      svg.append(sv('rect', { x, y, width: w, height: 44, rx: 7, fill, stroke }));
+      svg.append(sv('text', { x: x + w / 2, y: y + 19, 'text-anchor': 'middle', 'font-size': 12, fill: 'var(--text)' }, t));
+      svg.append(sv('text', { x: x + w / 2, y: y + 35, 'text-anchor': 'middle', 'font-size': 11, fill: 'var(--muted)' }, sub));
+    };
+    const va = shared ? '0x7f2b1c628000' : '0x601000';
+    box(10, 20, 170, 'process A', 'VA ' + va, 'var(--c-blue-soft)', 'var(--c-blue)');
+    box(10, 120, 170, 'process B', 'VA ' + va, 'var(--c-pink-soft)', 'var(--c-pink)');
+    box(230, 20, 110, "A's page table", 'CR3 = A.pgd', 'var(--surface-2)', 'var(--border)');
+    box(230, 120, 110, "B's page table", 'CR3 = B.pgd', 'var(--surface-2)', 'var(--border)');
+    if (shared) box(420, 70, 170, 'frame #4711', 'libc .text (page cache)', 'var(--c-green-soft)', 'var(--c-green)');
+    else { box(420, 20, 170, 'frame #812', "A's data", 'var(--c-green-soft)', 'var(--c-green)'); box(420, 120, 170, 'frame #77', "B's data", 'var(--c-green-soft)', 'var(--c-green)'); }
+    const line = (x1, y1, x2, y2) => svg.append(sv('line', { x1, y1, x2, y2, stroke: 'var(--accent)', 'stroke-width': 2 }));
+    line(180, 42, 230, 42); line(180, 142, 230, 142);
+    if (shared) { line(340, 42, 420, 92); line(340, 142, 420, 92); }
+    else { line(340, 42, 420, 42); line(340, 142, 420, 142); }
+  }
+  $('vaPriv').addEventListener('click', () => { setPrimary($('vaPriv'), [$('vaShared')]); vaDraw(false); });
+  $('vaShared').addEventListener('click', () => { setPrimary($('vaShared'), [$('vaPriv')]); vaDraw(true); });
+  vaDraw(false);
+
+  /* ---------- 6.3 page walk ---------- */
+  let tlb = [];
+  let walking = false;
+  function parseVA(t) {
+    t = t.trim().replace(/_/g, '').replace(/'/g, '');
+    if (!/^(0x)?[0-9a-f]{1,16}$/i.test(t)) return { err: 'Enter a hex address.' };
+    const a = BigInt(/^0x/i.test(t) ? t : '0x' + t);
+    const top = a >> 47n;
+    if (!(top === 0n || top === 0x1ffffn)) return { err: 'Non-canonical: bits 63..47 must all be equal (1.4) → #GP → SIGSEGV. No page walk happens.' };
+    const low = a & ((1n << 48n) - 1n);
+    const idx = (s) => Number((low >> BigInt(s)) & 511n);
+    return { a, pgd: idx(39), pud: idx(30), pmd: idx(21), pte: idx(12), off: Number(low & 4095n), vpn: low >> 12n, kernel: top !== 0n };
+  }
+  function tablesFor(v) {
+    if (v.a === 0x7f8010203456n || (v.vpn === 0x7f8010203n)) return { pgd: 0x1000, pud: 0x8000, pmd: 0x9A000, pte: 0x7B000, frame: 0x12345000 };
+    const mix = (n) => (Number((v.vpn * 2654435761n) % 0x3FFFn) + n) & 0xFFF;
+    return { pgd: 0x1000, pud: (0x100 + v.pgd) * 0x1000, pmd: (0x400 + mix(1)) * 0x1000, pte: (0x800 + mix(7)) * 0x1000, frame: (0x10000 + mix(13)) * 0x1000 };
+  }
+  function pwSplit(v) {
+    const s = $('pwSplit');
+    s.innerHTML = '';
+    if (v.err) return;
+    const b = (n, w) => n.toString(2).padStart(w, '0');
+    [['63..48', 'sign-ext', v.kernel ? '1…1' : '0…0', 's0'], ['47..39', 'PGD', v.pgd, 's1'], ['38..30', 'PUD', v.pud, 's2'], ['29..21', 'PMD', v.pmd, 's3'], ['20..12', 'PTE', v.pte, 's4'], ['11..0', 'offset', '0x' + hex(v.off, 3), 's5']]
+      .forEach(([bits, name, val, cls], i) => s.append(h('div', { class: 'seg ' + cls },
+        h('span', { class: 'hint' }, bits), h('b', null, name + ' ' + val),
+        i === 0 ? null : h('span', { class: 'hint' }, i === 5 ? b(v.off, 12) : b([v.pgd, v.pud, v.pmd, v.pte][i - 1], 9)))));
+  }
+  function walkBoxes(v, T) {
+    const steps = [
+      ['CR3', `PGD base\n0x${hex(T.pgd)}`],
+      ['PGD', `base 0x${hex(T.pgd)}\nentry ${v.pgd} →\nPUD 0x${hex(T.pud)}`],
+      ['PUD', `base 0x${hex(T.pud)}\nentry ${v.pud} →\nPMD 0x${hex(T.pmd)}`],
+      ['PMD', `base 0x${hex(T.pmd)}\nentry ${v.pmd} →\nPTE tbl 0x${hex(T.pte)}`],
+      ['PTE', `base 0x${hex(T.pte)}\nentry ${v.pte} →\nframe 0x${hex(T.frame)}`],
+      ['Physical', `0x${hex(T.frame)}\n+ 0x${hex(v.off, 3)}\n= 0x${hex(T.frame + v.off)}`],
+    ];
+    const w = $('pwWalk');
+    w.innerHTML = '';
+    steps.forEach(([t, body], i) => {
+      if (i) w.append(h('span', { class: 'warrow' }, '→'));
+      w.append(h('div', { class: 'wstep', id: 'ws' + i }, h('h4', null, t), h('div', { style: 'white-space:pre' }, body)));
+    });
+  }
+  function tlbDraw(hitVpn) {
+    const t = $('pwTlb');
+    t.innerHTML = '';
+    if (!tlb.length) t.append(h('span', { class: 'hint' }, 'empty'));
+    tlb.forEach((e) => t.append(h('span', { class: 'tlbe' + (e.vpn === hitVpn ? ' hit' : '') }, `VPN 0x${e.vpn.toString(16)} → 0x${hex(e.frame)}`)));
+  }
+  async function pwGo() {
+    if (walking) return;
+    const v = parseVA($('pwIn').value), msg = $('pwMsg');
+    pwSplit(v);
+    if (v.err) { $('pwWalk').innerHTML = ''; msg.textContent = v.err; msg.className = 'bad'; return; }
+    if (v.kernel) { msg.textContent = 'Kernel address: canonical, but its PTEs have U/S = supervisor, so a Ring 3 access faults. (Walk shown for illustration.)'; msg.className = 'warn'; }
+    const T = tablesFor(v);
+    walkBoxes(v, T);
+    const hit = tlb.find((e) => e.vpn === v.vpn);
+    if (hit) {
+      $('ws0').classList.add('on'); $('ws5').classList.add('on', 'cur');
+      $('pwReads').textContent = 0;
+      tlbDraw(v.vpn);
+      if (!v.kernel) { msg.textContent = `TLB hit: VPN 0x${v.vpn.toString(16)} is cached → physical 0x${hex(T.frame + v.off)} in ~1 cycle, zero page-table reads.`; msg.className = 'ok'; }
+      return;
+    }
+    walking = true;
+    tlbDraw();
+    for (let i = 0; i <= 5; i++) {
+      document.querySelectorAll('.wstep').forEach((e) => e.classList.remove('cur'));
+      $('ws' + i).classList.add('on', 'cur');
+      $('pwReads').textContent = Math.max(0, Math.min(4, i));
+      await sleep(450);
+    }
+    tlb.push({ vpn: v.vpn, frame: T.frame });
+    if (tlb.length > 4) tlb.shift();
+    tlbDraw(v.vpn);
+    if (!v.kernel) { msg.textContent = `TLB miss: 4 extra memory reads (PGD, PUD, PMD, PTE). Result cached in the TLB; translate again to see a hit.`; msg.className = 'warn'; }
+    walking = false;
+  }
+  $('pwGo').addEventListener('click', pwGo);
+  $('pwIn').addEventListener('keydown', (e) => { if (e.key === 'Enter') pwGo(); });
+  $('pwFlush').addEventListener('click', () => { tlb = []; tlbDraw(); $('pwMsg').textContent = 'TLB flushed (like a CR3 switch without PCID, 3.5).'; $('pwMsg').className = 'hint'; });
+  document.querySelectorAll('[data-pw]').forEach((b) => b.addEventListener('click', () => { $('pwIn').value = b.dataset.pw; pwGo(); }));
+  pwSplit(parseVA($('pwIn').value));
+  walkBoxes(parseVA($('pwIn').value), tablesFor(parseVA($('pwIn').value)));
+  tlbDraw();
+
+  /* ---------- 6.3 PTE flags ---------- */
+  const PTE = [
+    { k: 'NX', bit: 63, on: true, info: 'No-execute: code cannot run from this page.' },
+    { k: 'G', bit: 8, on: false, info: 'Global: keep in TLB across CR3 switches (kernel mappings).' },
+    { k: 'PS', bit: 7, on: false, info: 'Page size: in a PMD/PUD entry, this maps a 2 MiB / 1 GiB huge page (6.9).' },
+    { k: 'D', bit: 6, on: false, hw: true, info: 'Dirty: set by hardware on write → the page must be written back before freeing.' },
+    { k: 'A', bit: 5, on: false, hw: true, info: 'Accessed: set by hardware on any access → reclaim uses it to find unused pages.' },
+    { k: 'U/S', bit: 2, on: true, info: 'User/Supervisor: 1 = user may access; 0 = kernel only.' },
+    { k: 'R/W', bit: 1, on: true, info: 'Writable: 0 = read-only (a write faults: COW or SIGSEGV).' },
+    { k: 'P', bit: 0, on: true, info: 'Present: 0 = not mapped → any access faults.' },
+  ];
+  function pteDraw() {
+    const box = $('pteBits');
+    box.innerHTML = '';
+    PTE.forEach((f) => box.append(h('div', { class: 'pbit' },
+      h('button', { type: 'button', class: (f.on ? 'on' : '') + (f.hw ? ' hw' : ''), title: f.info, 'aria-pressed': String(f.on),
+        onclick: () => { f.on = !f.on; pteDraw(); $('pteExplain').textContent = f.k + ': ' + f.info; } }, f.k), `bit ${f.bit}`)));
+  }
+  const F = (k) => PTE.find((f) => f.k === k);
+  document.querySelectorAll('[data-acc]').forEach((b) => b.addEventListener('click', () => {
+    const a = b.dataset.acc, out = $('pteOut');
+    const user = a[0] === 'u', write = a === 'uw', exec = a === 'ux';
+    let res, cls = 'bad';
+    if (!F('P').on) res = '#PF: not present → kernel checks the VMA: demand paging / swap-in, or SIGSEGV if no VMA (6.5)';
+    else if (user && !F('U/S').on) res = '#PF: user access to a supervisor page → SIGSEGV (this is how kernel memory is protected)';
+    else if (write && !F('R/W').on) res = '#PF: write to read-only page → kernel checks the VMA: writable → copy-on-write; not writable → SIGSEGV';
+    else if (exec && F('NX').on) res = '#PF: execute on an NX page → SIGSEGV (no running injected code from the stack/heap)';
+    else {
+      F('A').on = true; if (write) F('D').on = true;
+      res = 'Allowed. Hardware set A' + (write ? ' and D' : '') + '.'; cls = 'ok';
+    }
+    out.textContent = res; out.className = cls;
+    pteDraw();
+  }));
+  pteDraw();
+
+  /* ---------- 6.4 VMAs ---------- */
+  const MAPS = [
+    ['55d0c1a00000-55d0c1a02000', 'r--p', '/usr/bin/cat', 'ELF header, .rodata', [1, 1]],
+    ['55d0c1a02000-55d0c1a07000', 'r-xp', '/usr/bin/cat', '.text (code)', [1, 1, 1, 0, 1]],
+    ['55d0c1a0a000-55d0c1a0b000', 'rw-p', '/usr/bin/cat', '.data', [1]],
+    ['55d0c2f4e000-55d0c2f6f000', 'rw-p', '[heap]', 'heap: 33 pages reserved, 3 touched', null],
+    ['7f2b1c600000-7f2b1c628000', 'r--p', 'libc.so.6', 'libc read-only data', null],
+    ['7f2b1c628000-7f2b1c7bd000', 'r-xp', 'libc.so.6', 'libc code (shared via page cache)', null],
+    ['7ffd5b8e7000-7ffd5b908000', 'rw-p', '[stack]', 'stack: grows down, top pages used', null],
+  ];
+  function vmPattern(i, n) {
+    if (MAPS[i][4]) return MAPS[i][4];
+    const out = [];
+    for (let k = 0; k < n; k++) {
+      if (MAPS[i][2] === '[heap]') out.push(k < 3 ? 1 : 0);
+      else if (MAPS[i][2] === '[stack]') out.push(k >= n - 4 ? 1 : 0);
+      else out.push(((k * 7 + i * 3) % 5) < 2 ? 1 : 0);
+    }
+    return out;
+  }
+  function vmSelect(i) {
+    [...$('vmMaps').rows].forEach((r, k) => r.classList.toggle('sel', k === i));
+    const [range, perm, path, desc] = MAPS[i];
+    const [s, e] = range.split('-').map((x) => parseInt(x, 16));
+    const n = (e - s) / 4096;
+    const pat = vmPattern(i, Math.min(n, 160));
+    $('vmTitle').textContent = `${path}  ${perm}  (${n} pages, ${(n * 4).toLocaleString()} KiB)`;
+    const box = $('vmPages');
+    box.innerHTML = '';
+    pat.forEach((p) => box.append(h('div', { class: 'pg' + (p ? ' res' : '') })));
+    const res = pat.filter(Boolean).length;
+    $('vmInfo').textContent = `${desc}. Showing ${pat.length}${pat.length < n ? ' of ' + n : ''} pages: ${res} present in the page table (RSS ${res * 4} KiB${pat.length < n ? ' in this slice' : ''}).`;
+  }
+  MAPS.forEach(([range, perm, path], i) => $('vmMaps').append(h('tr', { onclick: () => vmSelect(i) }, h('td', null, range), h('td', null, perm), h('td', null, path))));
+  vmSelect(3);
+
+  /* ---------- 6.5 page fault flow ---------- */
+  const NODES = [
+    ['n1', 'CPU accesses virtual address X'],
+    ['n2', 'TLB hit?'],
+    ['n3', 'Page walk: PTE present and permissions OK?'],
+    ['n4', '#PF exception → kernel: find_vma(current->mm, X)'],
+    ['n5', 'X inside a VMA?'],
+    ['n6', 'Access allowed by the VMA\'s flags?'],
+    ['n7', 'Why wasn\'t it mapped? Fix the page table, retry the instruction'],
+  ];
+  const SCEN = [
+    ['Hot data', { n1: '', n2: 'yes' }, 'fast', 'done: TLB hit', '~1 cycle'],
+    ['Mapped, TLB miss', { n1: '', n2: 'no', n3: 'yes' }, 'fast', 'done: walk + fill TLB', 'tens to hundreds of cycles'],
+    ['NULL pointer', { n1: '', n2: 'no', n3: 'no', n4: '', n5: 'no' }, 'segv', 'SIGSEGV', 'segmentation fault'],
+    ['Write to .text', { n1: '', n2: 'no', n3: 'no (R/O)', n4: '', n5: 'yes', n6: 'no' }, 'segv', 'SIGSEGV', 'VMA is r-x'],
+    ['First touch of malloc', { n1: '', n2: 'no', n3: 'no', n4: '', n5: 'yes', n6: 'yes', n7: 'anon, never touched → zeroed frame' }, 'minor', 'MINOR fault', '~1 µs'],
+    ['Code page in page cache', { n1: '', n2: 'no', n3: 'no', n4: '', n5: 'yes', n6: 'yes', n7: 'file page cached → map it' }, 'minor', 'MINOR fault', '~1 µs'],
+    ['File page not cached', { n1: '', n2: 'no', n3: 'no', n4: '', n5: 'yes', n6: 'yes', n7: 'read from disk, task sleeps (D)' }, 'major', 'MAJOR fault', '10 µs (NVMe) – 10 ms (HDD)'],
+    ['Swapped-out page', { n1: '', n2: 'no', n3: 'no', n4: '', n5: 'yes', n6: 'yes', n7: 'read from swap, task sleeps' }, 'major', 'MAJOR fault', 'disk latency'],
+    ['Write after fork (COW)', { n1: '', n2: 'no', n3: 'no (R/O)', n4: '', n5: 'yes', n6: 'yes (VMA rw-)', n7: 'COW: copy the page, map it R/W' }, 'minor', 'MINOR fault', '~1 µs + 4 KiB copy'],
+  ];
+  function pfShow(i) {
+    const [, path, cls, out, cost] = SCEN[i];
+    [...$('pfBtns').children].forEach((b, k) => b.classList.toggle('primary', k === i));
+    const f = $('pfFlow');
+    f.innerHTML = '';
+    NODES.forEach(([id, text], k) => {
+      if (k) f.append(h('div', { class: 'farrow' }, '↓'));
+      const on = id in path;
+      f.append(h('div', { class: 'fnode' + (on ? ' on' : '') }, text, on && path[id] ? h('span', { class: 'ans' }, path[id]) : null));
+    });
+    $('pfOut').innerHTML = '';
+    $('pfOut').append(h('span', { class: 'outcome ' + cls }, out));
+    $('pfCost').textContent = cost;
+  }
+  SCEN.forEach((s, i) => $('pfBtns').append(h('button', { type: 'button', onclick: () => pfShow(i) }, s[0])));
+  pfShow(4);
+
+  /* ---------- 6.5 demand paging ---------- */
+  let dp = false;
+  function dpDraw() {
+    const t = +$('dpTouch').value;
+    $('dpTouchV').textContent = t + ' MiB';
+    const bar = $('dpBar');
+    bar.innerHTML = '';
+    if (!dp) bar.append(h('div', { style: 'flex:1; color: var(--muted)' }, 'no VMA yet'));
+    else bar.append(h('div', { style: `flex:${t}; background: var(--c-green); color:#fff` }, t ? 'resident' : ''), h('div', { style: `flex:${1024 - t}; background: var(--hatch), var(--bg)` }, 'VMA reserved, no frames'));
+    $('dpStats').innerHTML = '';
+    $('dpStats').append(stat('VSZ (virtual)', dp ? '1024 MiB' : '0'), stat('RSS (resident)', t + ' MiB', 'ok'), stat('minor faults', (t * 256).toLocaleString()));
+  }
+  $('dpMalloc').addEventListener('click', () => { dp = true; $('dpTouch').disabled = false; dpDraw(); });
+  $('dpTouch').addEventListener('input', dpDraw);
+  dpDraw();
+
+  /* ---------- 6.5 COW ---------- */
+  let cw;
+  function cwReset() { cw = { forked: false, exec: false, P: { A: 7, B: 9, C: 3, D: 5 }, C: null, ro: true, msg: 'Parent has 4 pages in 4 frames.' }; cwDraw(); }
+  function cwDraw() {
+    const t = $('cwTable');
+    t.innerHTML = '';
+    t.append(h('tr', null, h('th', null, 'page'), h('th', null, 'parent → frame'), h('th', null, 'child → frame')));
+    const count = {};
+    ['P', 'C'].forEach((w) => { if (cw[w]) Object.values(cw[w]).forEach((f) => (count[f] = (count[f] || 0) + 1)); });
+    const cell = (w, p) => {
+      if (!cw[w]) return h('td', { class: 'hint' }, w === 'C' && cw.exec ? '(new program: different pages)' : '—');
+      const f = cw[w][p], shared = count[f] > 1;
+      return h('td', { style: shared ? 'background: var(--c-amber-soft)' : 'background: var(--c-green-soft)' }, `#${f} ${shared ? '(shared, R/O)' : '(private, R/W)'}`);
+    };
+    ['A', 'B', 'C', 'D'].forEach((p) => t.append(h('tr', null, h('td', { class: 'mono' }, p), cell('P', p), cell('C', p))));
+    const frames = Object.keys(count).length;
+    $('cwMsg').textContent = `${cw.msg}  Physical frames in use: ${frames}.`;
+  }
+  let nextFrame = 12;
+  $('cwFork').addEventListener('click', () => { if (cw.forked) return; cw.forked = true; cw.C = { ...cw.P }; cw.msg = 'fork(): page tables copied, all writable pages marked read-only in BOTH. No data copied.'; cwDraw(); });
+  const cwWrite = (who, page) => {
+    if (!cw.forked || !cw[who]) { cw.msg = 'fork() first (and before exec).'; return cwDraw(); }
+    const other = who === 'P' ? 'C' : 'P', f = cw[who][page];
+    if (cw[other] && cw[other][page] === f) { cw[who][page] = nextFrame++; cw.msg = `${who === 'P' ? 'Parent' : 'Child'} wrote ${page}: page fault → frame #${f} is shared → copy 4 KiB into a new frame, map it R/W. The other side keeps #${f}.`; }
+    else cw.msg = `${page} is already private: no fault, just a write.`;
+    cwDraw();
+  };
+  $('cwChildB').addEventListener('click', () => cwWrite('C', 'B'));
+  $('cwParentC').addEventListener('click', () => cwWrite('P', 'C'));
+  $('cwExec').addEventListener('click', () => { if (!cw.forked) return; cw.C = null; cw.exec = true; cw.msg = 'execve(): the child drops its whole COW address space. Pages it never wrote were never copied.'; cwDraw(); });
+  $('cwReset').addEventListener('click', () => { nextFrame = 12; cwReset(); });
+  cwReset();
+
+  /* ---------- 6.6 mmap matrix ---------- */
+  const MM = {
+    'file-private': ['File + private', 'Reads see the file; writes are COW copies only you see, never written back.', 'Program .text/.data, shared libraries'],
+    'file-shared': ['File + shared', 'Writes go to the page cache, visible to every process mapping the file, written back to disk.', 'Databases, IPC through a file'],
+    'anon-private': ['Anonymous + private', 'Zero-filled private memory; after fork it is COW.', 'malloc, heap, stack'],
+    'anon-shared': ['Anonymous + shared', 'Memory that stays shared between parent and children after fork (no COW).', 'Parent/child shared memory'],
+  };
+  function mmSelect(key) {
+    document.querySelectorAll('#mmGrid button').forEach((b) => b.classList.toggle('primary', b.dataset.k === key));
+    const [t, d, e] = MM[key];
+    $('mmText').innerHTML = '';
+    $('mmText').append(h('b', null, t + ': '), d, h('br'), h('span', { class: 'hint' }, 'Used for: ' + e));
+  }
+  [['file', 'File-backed'], ['anon', 'Anonymous']].forEach(([k, label]) => {
+    $('mmGrid').append(h('div', { class: 'hd', style: 'text-align:right; align-self:center' }, label));
+    ['private', 'shared'].forEach((p) => {
+      const key = k + '-' + p;
+      $('mmGrid').append(h('button', { type: 'button', 'data-k': key, onclick: () => mmSelect(key) }, h('b', null, MM[key][0]), h('br'), MM[key][2]));
+    });
+  });
+  mmSelect('anon-private');
+
+  /* ---------- 6.6 malloc threshold ---------- */
+  function maUpdate() {
+    const s = +$('maSize').value;
+    const bytes = Math.round(Math.pow(2, 4 + (s / 100) * 20));    // 16 B .. 16 MiB
+    const fmt = (b) => b < 1024 ? b + ' B' : b < 1048576 ? (b / 1024).toFixed(b < 10240 ? 1 : 0) + ' KiB' : (b / 1048576).toFixed(1) + ' MiB';
+    $('maSizeV').textContent = fmt(bytes);
+    const big = bytes >= 131072;
+    $('maHeap').style.boxShadow = big ? '' : '0 0 0 3px var(--accent)';
+    $('maMmap').style.boxShadow = big ? '0 0 0 3px var(--accent)' : '';
+    const pages = Math.ceil((bytes + 16) / 4096) * 4096;
+    $('maOut').textContent = big
+      ? `mmap(NULL, ${pages}, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0) = 0x7f3a9c2fe000\n... free(p) → munmap(0x7f3a9c2fe000, ${pages})   (back to the kernel right away)`
+      : `(served from malloc's free lists; maybe one brk() to grow the heap)\nbrk(0x55f1c7f4c000) = 0x55f1c7f4c000\n... free(p) → chunk returns to malloc's free list, not to the kernel`;
+  }
+  $('maSize').addEventListener('input', maUpdate);
+  maUpdate();
+
+  /* ---------- 6.7 page cache ---------- */
+  let pc;
+  const PCN = 6;
+  function pcReset() { pc = { t: 0, pages: Array.from({ length: PCN }, () => ({ cached: false, ver: 1, disk: 1, dirtyAt: null, lost: false })), hits: 0, miss: 0, log: [] }; pcDraw(); }
+  function pcDraw() {
+    const c = $('pcCache'), d = $('pcDisk');
+    c.innerHTML = ''; d.innerHTML = '';
+    pc.pages.forEach((p, i) => {
+      const dirty = p.cached && p.ver > p.disk;
+      const cls = p.lost ? 'lost' : !p.cached ? '' : dirty ? 'dirty' : 'clean';
+      c.append(h('button', { type: 'button', class: 'pc ' + cls, onclick: (e) => (e.shiftKey ? pcWrite(i) : pcRead(i)) },
+        h('div', { class: 't' }, 'page ' + i), p.lost ? `v${p.lostVer} lost` : p.cached ? `v${p.ver}${dirty ? ' dirty ' + (pc.t - p.dirtyAt) + 's' : ''}` : 'not cached'));
+      d.append(h('div', { class: 'pc' }, h('div', { class: 't' }, 'blk ' + i), 'v' + p.disk));
+    });
+    $('pcStats').innerHTML = '';
+    $('pcStats').append(stat('time', pc.t + ' s'), stat('cache hits', pc.hits, 'ok'), stat('misses (disk reads)', pc.miss, 'bad'), stat('dirty pages', pc.pages.filter((p) => p.cached && p.ver > p.disk).length, 'warn'));
+    $('pcLog').textContent = pc.log.slice(-7).join('\n') || 'Read page 0 twice: the second read is a hit.';
+  }
+  function pcRead(i) {
+    const p = pc.pages[i];
+    p.lost = false;
+    if (p.cached) { pc.hits++; pc.log.push(`read(page ${i}): HIT → copy from RAM, ~1 µs`); }
+    else { pc.miss++; p.cached = true; p.ver = p.disk; pc.log.push(`read(page ${i}): MISS → disk read via DMA, task sleeps, ~100 µs; page now cached`); }
+    pcDraw();
+  }
+  function pcWrite(i) {
+    const p = pc.pages[i];
+    p.lost = false;
+    if (!p.cached) { p.cached = true; p.ver = p.disk; }
+    p.ver++;
+    if (p.dirtyAt === null) p.dirtyAt = pc.t;
+    pc.log.push(`write(page ${i}): copied into the page cache, marked dirty, write() returns immediately (v${p.ver})`);
+    pcDraw();
+  }
+  function pcFlush(i, why) { const p = pc.pages[i]; p.disk = p.ver; p.dirtyAt = null; pc.log.push(`${why}: page ${i} v${p.ver} written to disk`); }
+  const pcSel = $('pcPage');
+  for (let i = 0; i < PCN; i++) pcSel.append(h('option', { value: i }, 'page ' + i));
+  $('pcRead').addEventListener('click', () => pcRead(+pcSel.value));
+  $('pcWrite').addEventListener('click', () => pcWrite(+pcSel.value));
+  $('pcTick').addEventListener('click', () => {
+    pc.t += 10;
+    pc.pages.forEach((p, i) => { if (p.cached && p.ver > p.disk && pc.t - p.dirtyAt >= 30) pcFlush(i, 'flusher thread (dirty ≥ 30 s)'); });
+    pcDraw();
+  });
+  $('pcFsync').addEventListener('click', () => {
+    let n = 0;
+    pc.pages.forEach((p, i) => { if (p.cached && p.ver > p.disk) { pcFlush(i, 'fsync()'); n++; } });
+    if (!n) pc.log.push('fsync(): nothing dirty');
+    else pc.log.push('fsync() returns only after the data (and a device cache flush) is on stable storage');
+    pcDraw();
+  });
+  $('pcPower').addEventListener('click', () => {
+    let lost = 0;
+    pc.pages.forEach((p) => { if (p.cached && p.ver > p.disk) { p.lost = true; p.lostVer = p.ver; lost++; } p.cached = false; p.dirtyAt = null; });
+    pc.log.push(`⚡ POWER LOSS: RAM is gone. ${lost ? lost + ' dirty page(s) never reached the disk, although write() returned success.' : 'Nothing was dirty, nothing lost.'}`);
+    pc.pages.forEach((p) => { if (p.lost) p.ver = p.disk; });
+    pcDraw();
+  });
+  $('pcReset').addEventListener('click', pcReset);
+  pcReset();
+
+  /* ---------- 6.8 LRU ---------- */
+  const WM = { min: 3, low: 6, high: 10, total: 30 };
+  let lr;
+  function lrReset() {
+    lr = { free: 12, active: [], inactive: [], log: [], seq: 1 };
+    for (let i = 0; i < 18; i++) {
+      const p = { id: lr.seq++, type: i % 3 === 0 ? 'anon' : 'file', acc: i % 4 === 0 };
+      (i < 8 ? lr.active : lr.inactive).push(p);
+    }
+    lrDraw();
+  }
+  function reclaimOne() {
+    for (let guard = 0; guard < 60; guard++) {
+      if (!lr.inactive.length) {
+        if (!lr.active.length) return false;
+        const p = lr.active.shift(); p.acc = false; lr.inactive.push(p);
+        lr.log.push(`  demote P${p.id}: active → inactive (A bit cleared)`);
+        continue;
+      }
+      const p = lr.inactive.shift();                         // tail = oldest
+      if (p.acc) { p.acc = false; lr.active.push(p); lr.log.push(`  P${p.id} was accessed → promote to active (second chance)`); continue; }
+      lr.free++;
+      lr.log.push(`  evict P${p.id} (${p.type === 'file' ? 'clean file page: just dropped' : 'anon page: written to swap'})`);
+      return true;
+    }
+    return false;
+  }
+  function lrDraw() {
+    const g = $('lrGauge');
+    g.innerHTML = '';
+    g.append(h('div', { class: 'fill', style: `width:${(lr.free / WM.total) * 100}%` }));
+    [['min', WM.min, 'var(--c-red)'], ['low', WM.low, 'var(--c-amber)'], ['high', WM.high, 'var(--c-green)']].forEach(([n, v, c]) => {
+      g.append(h('div', { class: 'wm', style: `left:${(v / WM.total) * 100}%; background:${c}` }));
+      g.append(h('div', { class: 'wl', style: `left:${(v / WM.total) * 100}%; color:${c}` }, n));
+    });
+    g.append(h('div', { class: 'wl', style: 'right:8px; left:auto; color: var(--text)' }, `free: ${lr.free} pages`));
+    const draw = (id, list) => {
+      const box = $(id);
+      box.innerHTML = '';
+      list.forEach((p) => box.append(h('button', { type: 'button', class: `lp ${p.type}${p.acc ? ' acc' : ''}`, title: `${p.type} page${p.acc ? ', accessed' : ''}`,
+        onclick: () => { p.acc = true; lrDraw(); } }, 'P' + p.id)));
+      if (!list.length) box.append(h('span', { class: 'hint' }, 'empty'));
+    };
+    draw('lrActive', lr.active.slice().reverse());
+    draw('lrInactive', lr.inactive.slice().reverse());
+    $('lrLog').textContent = lr.log.slice(-9).join('\n') || 'Lists are drawn newest → oldest. Eviction takes from the oldest end of inactive.';
+    $('lrLog').scrollTop = 1e6;
+  }
+  $('lrAlloc').addEventListener('click', () => {
+    for (let k = 0; k < 4; k++) {
+      if (lr.free <= WM.min) { lr.log.push(`free (${lr.free}) at min watermark → DIRECT RECLAIM: the allocating process must reclaim first (latency spike)`); if (!reclaimOne()) { lr.log.push('nothing reclaimable → OOM'); break; } }
+      lr.free--;
+      lr.inactive.push({ id: lr.seq++, type: k % 2 ? 'file' : 'anon', acc: false });
+    }
+    lr.log.push(`allocated 4 pages (new pages start on the inactive list). free = ${lr.free}`);
+    if (lr.free < WM.low) {
+      lr.log.push(`free ${lr.free} < low (${WM.low}) → wake kswapd, reclaim until free ≥ high (${WM.high})`);
+      while (lr.free < WM.high && reclaimOne());
+      lr.log.push(`kswapd sleeps. free = ${lr.free}`);
+    }
+    lrDraw();
+  });
+  $('lrAccess').addEventListener('click', () => {
+    const all = lr.active.concat(lr.inactive);
+    for (let k = 0; k < 3 && all.length; k++) all[Math.floor(Math.random() * all.length)].acc = true;
+    lrDraw();
+  });
+  $('lrReset').addEventListener('click', lrReset);
+  lrReset();
+
+  /* ---------- 6.8 overcommit ---------- */
+  function ocUpdate() {
+    const gb = +$('ocSize').value, mode = $('ocMode').value, swap = +$('ocSwap').value, ram = 16;
+    $('ocSizeV').textContent = gb + ' GB';
+    const out = $('ocOut'), why = $('ocWhy');
+    let ok, reason;
+    if (mode === '1') { ok = true; reason = 'Always overcommit: the kernel never refuses. Trouble comes later, when the pages are touched.'; }
+    else if (mode === '0') {
+      ok = gb <= ram + swap;
+      reason = ok ? `Heuristic: ${gb} GB is not more than RAM + swap (${ram + swap} GB), so the request is allowed even if memory is already in use. Physical frames come only on first touch.`
+                  : `Heuristic: a single request larger than RAM + swap (${ram + swap} GB) is an "obvious overcommit" and is refused.`;
+    } else {
+      const limit = swap + ram * 0.5;
+      ok = gb <= limit;
+      reason = `Strict: commit limit = swap + 50% of RAM = ${limit} GB. ${ok ? 'Fits.' : 'Exceeds it → refused, malloc returns NULL.'}`;
+    }
+    out.textContent = ok ? `✓ malloc returns a pointer (only a VMA was created)` : '✗ malloc returns NULL (ENOMEM)';
+    out.className = ok ? 'ok' : 'bad';
+    why.textContent = reason + (ok && gb > ram + swap ? ' Touching all of it would trigger the OOM killer.' : '');
+  }
+  ['ocSize', 'ocMode', 'ocSwap'].forEach((id) => $(id).addEventListener('input', ocUpdate));
+  ocUpdate();
+
+  /* ---------- 6.8 OOM killer ---------- */
+  let oo;
+  function ooReset() {
+    oo = { procs: [{ n: 'postgres', mem: 30, adj: 0 }, { n: 'java', mem: 50, adj: 0 }, { n: 'sshd', mem: 2, adj: -1000 }, { n: 'bash', mem: 2, adj: 0 }, { n: 'chrome', mem: 10, adj: 300 }], msg: '' };
+    ooDraw();
+  }
+  const score = (p) => (p.adj <= -1000 ? 0 : Math.max(0, Math.round(p.mem * 10 + p.adj)));
+  function ooDraw() {
+    const box = $('ooProcs');
+    box.innerHTML = '';
+    oo.procs.forEach((p) => {
+      const adj = h('input', { type: 'number', min: -1000, max: 1000, step: 100, value: p.adj, 'aria-label': p.n + ' oom_score_adj' });
+      adj.addEventListener('change', () => { p.adj = Math.max(-1000, Math.min(1000, +adj.value || 0)); ooDraw(); });
+      box.append(h('b', { class: 'mono' }, p.n),
+        h('div', null, h('div', { class: 'procbar' + (p.dead ? ' dead' : ''), style: `width:${p.dead ? 100 : p.mem}%` }, p.dead ? '' : '')),
+        h('span', { class: 'mono' }, p.dead ? 'exit 137' : `score ${score(p)}`),
+        h('label', { class: 'inline adj' }, h('span', { class: 'hint' }, 'adj'), adj));
+    });
+    const used = oo.procs.filter((p) => !p.dead).reduce((a, p) => a + p.mem, 0);
+    $('ooStats').innerHTML = '';
+    $('ooStats').append(stat('RAM used', used + ' / 100', used > 90 ? 'bad' : ''));
+    $('ooMsg').textContent = oo.msg; $('ooMsg').className = oo.msg.startsWith('Out') ? 'bad' : '';
+  }
+  $('ooGrow').addEventListener('click', () => {
+    const java = oo.procs.find((p) => p.n === 'java');
+    if (java.dead) return;
+    java.mem += 8;
+    const used = oo.procs.filter((p) => !p.dead).reduce((a, p) => a + p.mem, 0);
+    if (used > 100) {
+      const victim = oo.procs.filter((p) => !p.dead && p.adj > -1000).sort((a, b) => score(b) - score(a))[0];
+      victim.dead = true;
+      oo.msg = `Out of memory: Killed process ${victim.n} (score ${score(victim)}) with SIGKILL. Its shell/runtime sees exit status 137 (128 + 9).`;
+      if (victim === java) $('ooGrow').disabled = true;
+    } else oo.msg = `java's page faults are still being satisfied (RAM ${used}/100).`;
+    ooDraw();
+  });
+  $('ooReset').addEventListener('click', () => { $('ooGrow').disabled = false; ooReset(); });
+  ooReset();
+
+  /* ---------- 6.9 huge pages ---------- */
+  function hpUpdate() {
+    const ent = +$('hpEnt').value, size = +$('hpSize').value;
+    const wsBytes = Math.pow(2, 20 + ($('hpWs').value / 100) * 18);   // 1 MiB .. 256 GiB
+    const fmt = (b) => b < 1048576 ? (b / 1024).toFixed(0) + ' KiB' : b < 1073741824 ? (b / 1048576).toFixed(b < 10485760 ? 1 : 0) + ' MiB' : (b / 1073741824).toFixed(b < 10737418240 ? 1 : 0) + ' GiB';
+    $('hpWsV').textContent = fmt(wsBytes);
+    const reach = ent * size, cover = Math.min(1, reach / wsBytes);
+    $('hpStats').innerHTML = '';
+    $('hpStats').append(stat('TLB reach', fmt(reach)), stat('working set covered', (cover * 100).toFixed(cover < 0.1 ? 2 : 0) + '%', cover >= 1 ? 'ok' : cover > 0.25 ? 'warn' : 'bad'),
+      stat('page-walk levels on miss', size === 4096 ? 4 : size === 2097152 ? 3 : 2));
+    const bar = $('hpBar');
+    bar.innerHTML = '';
+    bar.append(h('div', { style: `flex:${cover}; background: var(--c-green); color:#fff` }, cover > 0.15 ? 'TLB hits' : ''), h('div', { style: `flex:${1 - cover}; background: var(--c-red-soft)` }, cover < 0.85 ? 'TLB misses → page walks' : ''));
+    const walk = $('hpWalk');
+    walk.innerHTML = '';
+    const lv = size === 4096 ? ['PGD', 'PUD', 'PMD', 'PTE', '4 KiB frame'] : size === 2097152 ? ['PGD', 'PUD', 'PMD (PS=1)', '2 MiB frame'] : ['PGD', 'PUD (PS=1)', '1 GiB frame'];
+    lv.forEach((l, i) => { if (i) walk.append(h('span', { class: 'warrow' }, '→')); walk.append(h('div', { class: 'seg s' + Math.min(5, i + 1) }, h('b', null, l))); });
+  }
+  ['hpEnt', 'hpSize', 'hpWs'].forEach((id) => $(id).addEventListener('input', hpUpdate));
+  hpUpdate();
+
+  /* ---------- 6.10 zram ---------- */
+  function zrUpdate() {
+    const d = +$('zrData').value, r = +$('zrRatio').value / 10;
+    $('zrDataV').textContent = d + ' GB'; $('zrRatioV').textContent = r.toFixed(1) + '×';
+    const used = d / r;
+    const bar = $('zrBar');
+    bar.innerHTML = '';
+    bar.append(h('div', { style: `flex:${used}; background: var(--c-blue); color:#fff` }, used.toFixed(1) + ' GB RAM'), h('div', { style: `flex:${d - used}; background: var(--c-green-soft)` }, 'saved ' + (d - used).toFixed(1) + ' GB'));
+    $('zrText').textContent = `${d} GB of swapped-out pages stored in ${used.toFixed(1)} GB of RAM. Bringing a page back costs a decompression (~µs), not a disk read.`;
+  }
+  ['zrData', 'zrRatio'].forEach((id) => $(id).addEventListener('input', zrUpdate));
+  zrUpdate();
+
+  /* ---------- 6.10 KSM ---------- */
+  const KCOL = { K: 'var(--c-purple)', Z: 'var(--muted)', L: 'var(--c-blue)', a: 'var(--c-green)', b: 'var(--c-pink)', c: 'var(--c-amber)', d: 'var(--c-red)', x: 'var(--c-green)' };
+  let ks;
+  function ksReset() {
+    ks = { vms: ['KKLZZabZ', 'KKLZZcZZ', 'KKLZZZdZ', 'KKLZZabZ'].map((s) => s.split('').map((c) => ({ c, merged: false }))), msg: '' };
+    ksDraw();
+  }
+  function ksDraw() {
+    const g = $('ksGrid');
+    g.innerHTML = '';
+    ks.vms.forEach((pages, i) => {
+      g.append(h('span', null, 'VM ' + (i + 1)));
+      pages.forEach((p) => g.append(h('div', { class: 'kp' + (p.merged ? ' merged' : ''), style: `background:${KCOL[p.c] || 'var(--c-green)'}` }, p.c)));
+    });
+    const total = ks.vms.length * 8;
+    const frames = ks.vms.flat().filter((p) => !p.merged).length + new Set(ks.vms.flat().filter((p) => p.merged).map((p) => p.c)).size;
+    $('ksStats').innerHTML = '';
+    $('ksStats').append(stat('guest pages', total), stat('physical frames', frames, frames < total ? 'ok' : ''), stat('saved', total - frames));
+    if (ks.msg) $('ksMsg').textContent = ks.msg;
+  }
+  $('ksRun').addEventListener('click', () => {
+    const cnt = {};
+    ks.vms.flat().forEach((p) => (cnt[p.c] = (cnt[p.c] || 0) + 1));
+    ks.vms.flat().forEach((p) => { if (cnt[p.c] > 1) p.merged = true; });
+    ks.msg = 'ksmd scanned MADV_MERGEABLE memory, found identical contents, and replaced them with one shared read-only page each.';
+    ksDraw();
+  });
+  $('ksWrite').addEventListener('click', () => {
+    const p = ks.vms[1][0];
+    p.c = 'x'; p.merged = false;
+    ks.msg = 'VM 2 wrote to a merged page → copy-on-write fault → VM 2 gets its own private copy again (shown as x).';
+    ksDraw();
+  });
+  $('ksReset').addEventListener('click', ksReset);
+  ksReset();
+})();
+</script>
+</body>
+</html>

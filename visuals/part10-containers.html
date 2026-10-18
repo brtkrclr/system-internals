@@ -1,0 +1,697 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Containers, Visualized</title>
+<meta name="description" content="Interactive visuals for Part 10 of System Internals: namespaces, cgroups, how docker run builds a container, overlayfs, capabilities and seccomp.">
+<script>
+  (function () {
+    var saved = null;
+    try { saved = localStorage.getItem('theme'); } catch (e) {}
+    var dark = saved ? saved === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches;
+    document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+  })();
+</script>
+<style>
+  :root {
+    --bg: #ffffff; --surface: #f6f8fa; --surface-2: #eaeef2; --text: #1f2328; --muted: #59636e;
+    --border: #d0d7de; --accent: #0969da; --accent-soft: #ddf4ff;
+    --c-blue: #0969da; --c-pink: #bf3989; --c-green: #1a7f37; --c-amber: #9a6700; --c-purple: #8250df; --c-red: #cf222e;
+    --c-blue-soft: #ddf4ff; --c-pink-soft: #ffeff7; --c-green-soft: #dafbe1; --c-amber-soft: #fff8c5; --c-purple-soft: #fbefff; --c-red-soft: #ffebe9;
+    --hatch: repeating-linear-gradient(45deg, transparent 0 4px, rgba(130,80,223,.22) 4px 7px);
+    --radius: 8px;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  html[data-theme="dark"] {
+    --bg: #0d1117; --surface: #151b23; --surface-2: #212830; --text: #e6edf3; --muted: #9198a1;
+    --border: #3d444d; --accent: #4493f8; --accent-soft: rgba(56,139,253,.15);
+    --c-blue: #4493f8; --c-pink: #f778ba; --c-green: #3fb950; --c-amber: #d29922; --c-purple: #ab7df8; --c-red: #f85149;
+    --c-blue-soft: rgba(56,139,253,.18); --c-pink-soft: rgba(247,120,186,.16); --c-green-soft: rgba(63,185,80,.16);
+    --c-amber-soft: rgba(210,153,34,.18); --c-purple-soft: rgba(171,125,248,.18); --c-red-soft: rgba(248,81,73,.16);
+    --hatch: repeating-linear-gradient(45deg, transparent 0 4px, rgba(171,125,248,.30) 4px 7px);
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif; }
+  a { color: var(--accent); }
+  code, .mono { font-family: var(--mono); font-size: .92em; }
+  code { background: var(--surface-2); padding: .1em .35em; border-radius: 4px; }
+
+  header.top { max-width: 1040px; margin: 0 auto; padding: 32px 16px 8px; }
+  header.top h1 { margin: 0 0 6px; font-size: clamp(28px, 5vw, 40px); line-height: 1.15; }
+  header.top p { margin: 0 0 8px; color: var(--muted); max-width: 70ch; }
+  .backlink { font-size: 14px; }
+
+  nav.chips { position: sticky; top: 0; z-index: 10; background: var(--bg); border-bottom: 1px solid var(--border); }
+  nav.chips .inner { max-width: 1040px; margin: 0 auto; padding: 8px 16px; display: flex; gap: 6px; overflow-x: auto; scrollbar-width: thin; }
+  nav.chips a { flex: none; font-size: 13px; padding: 4px 10px; border: 1px solid var(--border); border-radius: 999px;
+                color: var(--text); text-decoration: none; background: var(--surface); white-space: nowrap; }
+  nav.chips a:hover, nav.chips a.active { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+
+  main { max-width: 1040px; margin: 0 auto; padding: 8px 16px 64px; }
+  section.card { border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin: 24px 0; background: var(--bg); scroll-margin-top: 56px; }
+  section.card > h2 { margin: 0 0 4px; font-size: 22px; }
+  section.card > h2 .num { color: var(--muted); font-weight: 500; margin-right: 6px; }
+  .lead { color: var(--muted); margin: 0 0 16px; max-width: 75ch; }
+  .demo { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; margin: 12px 0; overflow-x: auto; }
+  .demo h3 { margin: 0 0 10px; font-size: 15px; }
+  .row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+  .stack { display: flex; flex-direction: column; gap: 10px; }
+  .connect { font-size: 14px; color: var(--muted); border-left: 3px solid var(--accent); padding: 4px 0 4px 10px; margin-top: 14px; }
+  .hint { font-size: 13px; color: var(--muted); }
+  .big { font-family: var(--mono); font-size: 22px; font-weight: 600; }
+  .stat { display: inline-flex; flex-direction: column; padding: 6px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg); min-width: 90px; }
+  .stat .k { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  .stat .v { font-family: var(--mono); font-size: 18px; font-weight: 600; }
+  .ok { color: var(--c-green); } .bad { color: var(--c-red); } .warn { color: var(--c-amber); }
+
+  button, select, input[type="text"], input[type="number"] {
+    font: inherit; font-size: 14px; color: var(--text); background: var(--bg);
+    border: 1px solid var(--border); border-radius: 6px; padding: 5px 10px;
+  }
+  button { cursor: pointer; }
+  button:hover { background: var(--surface-2); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover { filter: brightness(1.08); background: var(--accent); }
+  button:focus-visible, select:focus-visible, input:focus-visible, .bit:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  input[type="range"] { accent-color: var(--accent); width: min(360px, 100%); }
+  label.inline { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; }
+
+  /* bits */
+  .bits { display: inline-flex; gap: 4px; flex-wrap: nowrap; }
+  .bitcol { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+  .bit { width: 34px; height: 40px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg);
+         font: 600 18px var(--mono); color: var(--muted); cursor: pointer; padding: 0; transition: background .12s, color .12s; }
+  .bit.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .bit.sm { width: 22px; height: 30px; font-size: 14px; }
+  .bitcol .w { font: 11px var(--mono); color: var(--muted); }
+  .nibble { display: inline-flex; flex-direction: column; align-items: center; gap: 6px; padding: 6px; border: 1px dashed var(--border); border-radius: 8px; }
+  .nibble .hx { font: 700 22px var(--mono); color: var(--c-pink); }
+  .gap { width: 10px; }
+
+  /* byte cells */
+  .cells { display: grid; gap: 2px; }
+  .cell { height: 30px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg);
+          font: 11px var(--mono); color: var(--muted); display: flex; align-items: center; justify-content: center; position: relative; }
+  .cell.hl { background: var(--c-blue-soft); border-color: var(--c-blue); color: var(--text); font-weight: 600; }
+  .cell.hl2 { background: var(--c-pink-soft); border-color: var(--c-pink); color: var(--text); }
+  .cell.pad { background: var(--hatch), var(--bg); border-style: dashed; }
+  .cell.line { background: var(--c-amber-soft); }
+  .cell.boxstart { margin-left: 6px; }
+  .cell.lineb { box-shadow: -4px 0 0 0 var(--c-red); margin-left: 8px; }
+
+  table.mem { border-collapse: collapse; font-family: var(--mono); font-size: 14px; }
+  table.mem th, table.mem td { border: 1px solid var(--border); padding: 4px 10px; text-align: center; }
+  table.mem th { background: var(--surface-2); font-weight: 600; font-family: inherit; font-size: 13px; }
+
+  .tiles { display: grid; gap: 1px; }
+  .tile { width: 9px; height: 9px; background: var(--surface-2); border-radius: 1px; }
+  .tile.mark { background: var(--c-pink); }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 13px; color: var(--muted); }
+  .legend span::before { content: ""; display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 5px; vertical-align: -2px; background: var(--sw); border: 1px solid var(--border); }
+
+  /* address space */
+  .addrspace { display: grid; grid-template-columns: 120px 1fr; gap: 0; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; font-size: 13px; max-width: 560px; }
+  .addrspace > div { padding: 8px 10px; border-bottom: 1px solid var(--border); }
+  .addrspace .lbl { font-family: var(--mono); font-size: 11px; color: var(--muted); background: var(--surface-2); }
+  .addrspace .zone.kern { background: var(--c-purple-soft); }
+  .addrspace .zone.hole { background: var(--hatch), var(--bg); color: var(--muted); }
+  .addrspace .zone.user { background: var(--c-green-soft); }
+  .addrspace .zone.here { outline: 3px solid var(--accent); outline-offset: -3px; font-weight: 600; }
+  .bar { height: 26px; border-radius: 6px; display: flex; overflow: hidden; border: 1px solid var(--border); font-size: 12px; }
+  .bar > div { display: flex; align-items: center; justify-content: center; color: var(--text); white-space: nowrap; overflow: hidden; }
+  .logbar { display: grid; grid-template-columns: 110px 1fr 90px; gap: 6px 10px; align-items: center; font-size: 13px; }
+  .logbar .fill { height: 14px; border-radius: 4px; background: var(--accent); }
+
+  /* struct */
+  .fields { display: flex; flex-direction: column; gap: 6px; }
+  .field { display: flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 14px; }
+  .field .sw { width: 14px; height: 14px; border-radius: 3px; }
+  .field button { padding: 2px 8px; font-size: 13px; }
+  .structgrid { display: grid; grid-template-columns: 56px repeat(8, minmax(38px, 1fr)); gap: 3px; align-items: center; max-width: 520px; }
+  .structgrid .off { font: 11px var(--mono); color: var(--muted); text-align: right; padding-right: 6px; }
+  .structgrid .cell { height: 34px; font-size: 12px; color: var(--text); }
+
+  /* matrix sim */
+  .matrix { display: grid; grid-template-columns: repeat(8, 30px); gap: 3px; }
+  .matrix .cell { height: 30px; transition: background .1s; }
+  .matrix .cell.cached { background: var(--c-blue-soft); }
+  .matrix .cell.hit { background: var(--c-green); color: #fff; border-color: var(--c-green); }
+  .matrix .cell.miss { background: var(--c-red); color: #fff; border-color: var(--c-red); }
+  .matrix .cell.gb { margin-left: 5px; }
+
+  .cores { display: grid; grid-template-columns: repeat(2, minmax(160px, 1fr)); gap: 12px; max-width: 560px; }
+  .core { border: 1px solid var(--border); border-radius: 8px; padding: 10px; background: var(--bg); transition: box-shadow .15s; }
+  .core.flash { box-shadow: 0 0 0 3px var(--c-red); }
+  .core h4 { margin: 0 0 6px; font-size: 14px; }
+  .state { font: 600 13px var(--mono); padding: 2px 6px; border-radius: 4px; }
+  .state.M { background: var(--c-green-soft); color: var(--c-green); }
+  .state.I { background: var(--c-red-soft); color: var(--c-red); }
+  .state.S { background: var(--c-blue-soft); color: var(--c-blue); }
+  .state.none { background: var(--surface-2); color: var(--muted); }
+
+  /* float */
+  .fbits { display: flex; flex-wrap: wrap; gap: 2px; }
+  .fbits .bit { width: 20px; height: 30px; font-size: 13px; }
+  .fbits .bit.s { --tone: var(--c-red); } .fbits .bit.e { --tone: var(--c-blue); } .fbits .bit.f { --tone: var(--c-green); }
+  .fbits .bit { border-color: var(--tone); color: var(--tone); }
+  .fbits .bit.on { background: var(--tone); color: #fff; }
+  .fbits .sep { width: 8px; }
+  .exact { font-family: var(--mono); font-size: 13px; word-break: break-all; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; }
+
+  /* utf8 */
+  .cps { display: flex; flex-wrap: wrap; gap: 10px; }
+  .cp { border: 1px solid var(--border); border-radius: 8px; background: var(--bg); padding: 10px; min-width: 150px; }
+  .cp .ch { font-size: 30px; line-height: 1.1; }
+  .cp .u { font: 600 13px var(--mono); color: var(--c-purple); }
+  .cp .bytes { font: 13px var(--mono); margin-top: 6px; }
+  .cp .pre { color: var(--muted); }
+  .cp .pay { color: var(--c-green); font-weight: 600; }
+  .cp .hexb { color: var(--c-pink); }
+
+  svg text { font-family: var(--mono); }
+  .theme-btn { position: fixed; top: 10px; right: 12px; z-index: 20; width: 34px; height: 34px; padding: 0; font-size: 16px; }
+  @media (max-width: 600px) {
+    section.card { padding: 14px; }
+    .bit { width: 30px; height: 36px; font-size: 16px; }
+    .structgrid { grid-template-columns: 44px repeat(8, minmax(28px, 1fr)); }
+  }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+
+  footer.pagenav { max-width: 1040px; margin: 0 auto; padding: 0 16px 48px; display: flex; flex-wrap: wrap; gap: 8px 16px; justify-content: space-between; font-size: 14px; }
+  footer.pagenav a { text-decoration: none; }
+  .badge { display: inline-block; font: 600 12px var(--mono); padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface-2); color: var(--muted); }
+  .badge.R { background: var(--c-green-soft); color: var(--c-green); border-color: var(--c-green); }
+  .badge.S { background: var(--c-blue-soft); color: var(--c-blue); border-color: var(--c-blue); }
+  .badge.D { background: var(--c-amber-soft); color: var(--c-amber); border-color: var(--c-amber); }
+  .badge.Z { background: var(--c-purple-soft); color: var(--c-purple); border-color: var(--c-purple); }
+  .badge.X { background: var(--c-red-soft); color: var(--c-red); border-color: var(--c-red); }
+  .log { font: 12.5px/1.5 var(--mono); background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; height: 150px; overflow-y: auto; white-space: pre-wrap; }
+  .box { border: 1px solid var(--border); border-radius: 8px; background: var(--bg); padding: 10px; }
+  .box h4 { margin: 0 0 6px; font-size: 14px; }
+  .on-acc { outline: 3px solid var(--accent); outline-offset: 1px; }
+  table.grid { border-collapse: collapse; font-size: 14px; width: 100%; }
+  table.grid th, table.grid td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; vertical-align: top; }
+  table.grid th { background: var(--surface-2); font-size: 13px; }
+  table.grid tr.pick td { background: var(--accent-soft); }
+  .steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+  .steps li { padding: 6px 10px; border-radius: 6px; border: 1px solid transparent; font-size: 14px; cursor: pointer; }
+  .steps li.cur { border-color: var(--accent); background: var(--accent-soft); font-weight: 600; }
+  .steps li.done { color: var(--muted); }
+
+  .nsbtns button.primary::before { content: "✓ "; }
+  .views { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
+  .view { border: 1px solid var(--border); border-radius: 8px; background: var(--bg); padding: 10px 12px; font: 13px/1.6 var(--mono); }
+  .view h4 { margin: 0 0 6px; font: 600 14px -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  .view .k { color: var(--muted); }
+  .view .chg { background: var(--c-green-soft); border-radius: 3px; padding: 0 3px; }
+  .meter { height: 22px; border-radius: 6px; background: var(--surface-2); border: 1px solid var(--border); overflow: hidden; position: relative; }
+  .meter > div { height: 100%; background: var(--c-blue); transition: width .15s; }
+  .meter > div.hot { background: var(--c-red); }
+  .meter .lim { position: absolute; top: -2px; bottom: -2px; width: 3px; background: var(--c-red); }
+  .tl { display: flex; gap: 4px; }
+  .tl .per { flex: 1; height: 26px; border: 1px solid var(--border); border-radius: 4px; overflow: hidden; display: flex; }
+  .tl .run { background: var(--c-green); }
+  .tl .thr { background: var(--hatch), var(--surface-2); }
+  .tree { font: 13px/1.6 var(--mono); white-space: pre; background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px; overflow-x: auto; }
+  .pipe { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .pipe .comp { border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; background: var(--bg); font: 13px var(--mono); }
+  .pipe .comp.cur { outline: 3px solid var(--accent); outline-offset: 1px; background: var(--accent-soft); }
+  .pipe .ar { color: var(--muted); }
+  .layers { display: flex; flex-direction: column; gap: 6px; max-width: 640px; }
+  .layer { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; background: var(--bg); }
+  .layer h5 { margin: 0 0 6px; font-size: 13px; }
+  .layer.upper { border-color: var(--c-green); background: var(--c-green-soft); }
+  .layer.merged { border-color: var(--accent); background: var(--accent-soft); }
+  .fchip { display: inline-block; font: 12px var(--mono); padding: 2px 8px; margin: 2px; border-radius: 4px; border: 1px solid var(--border); background: var(--bg); cursor: pointer; color: var(--text); }
+  .fchip.sel { outline: 2px solid var(--accent); }
+  .fchip.hidden { opacity: .4; text-decoration: line-through; cursor: default; }
+  .fchip.wh { border-style: dashed; color: var(--c-red); }
+  .fchip.served { background: var(--c-amber-soft); border-color: var(--c-amber); }
+  .caps { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 4px 12px; font: 13px var(--mono); }
+  .acts { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 6px; }
+  .act { border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; background: var(--bg); font-size: 13px; }
+  .act.yes { border-color: var(--c-green); } .act.no { border-color: var(--c-red); }
+  .act .res { font: 600 12px var(--mono); }
+  .sysbtns button { font-family: var(--mono); font-size: 13px; }
+  .flow { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font: 13px var(--mono); }
+  .flow .st { border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; background: var(--bg); }
+  .flow .st.lit { outline: 3px solid var(--accent); outline-offset: 1px; }
+</style>
+</head>
+<body>
+<button class="theme-btn" id="themeBtn" type="button" aria-label="Toggle dark mode"></button>
+
+<header class="top">
+  <a class="backlink" href="../#10-namespaces-and-cgroups-containers">← Back to the notes: Part 10</a>
+  <h1>Containers, Visualized</h1>
+  <p>There is no container object in the kernel. A container is a normal process tree with a restricted view (namespaces), limited resources (cgroups) and restricted privileges (capabilities, seccomp). Switch each piece on and watch the view change.</p>
+</header>
+
+<nav class="chips" aria-label="Sections"><div class="inner" id="chips"></div></nav>
+
+<main>
+
+<section class="card" id="s10-1" data-title="10.1 Namespaces">
+  <h2><span class="num">10.1</span>Namespaces: What Can I See?</h2>
+  <p class="lead">Start a shell on the host, then switch namespaces on one by one. Each namespace replaces one global resource with a private copy. Highlighted lines changed.</p>
+  <div class="demo">
+    <div class="row nsbtns" id="nsBtns"></div>
+    <p class="mono hint" id="nsFlags" style="margin:10px 0"></p>
+    <div class="views">
+      <div class="view" id="vHost"></div>
+      <div class="view" id="vIn"></div>
+    </div>
+  </div>
+  <div class="demo">
+    <h3>PID namespaces are nested: one process, two PIDs</h3>
+    <svg id="pidSvg" viewBox="0 0 640 230" width="100%" style="max-width:640px" role="img" aria-label="Nested PID namespaces"></svg>
+  </div>
+  <div class="demo">
+    <h3>Network namespace plumbing: veth pair + bridge + NAT</h3>
+    <svg id="netSvg" viewBox="0 0 680 150" width="100%" style="max-width:680px" role="img" aria-label="veth pair, bridge and NAT"></svg>
+    <p class="hint" style="margin:6px 0 0">A new network namespace starts with only <code>lo</code>. The runtime moves one end of a veth pair (a virtual cable) inside as <code>eth0</code>, attaches the other to the <code>docker0</code> bridge, and NATs outgoing traffic.</p>
+  </div>
+  <div class="connect">Connection: namespaces hang off <code>task_struct-&gt;nsproxy</code> (4.2) and are created by <code>clone()</code> flags (4.9); PID 1 inside inherits PID 1's signal rules (3.7, Part 8).</div>
+</section>
+
+<section class="card" id="s10-2" data-title="10.2 cgroups">
+  <h2><span class="num">10.2</span>cgroups: How Much Can I Use?</h2>
+  <p class="lead">Set the limits, then run a workload inside the cgroup. The host's other memory is untouched: the fence is around the group. Scaled-down simulation.</p>
+  <div class="demo">
+    <div class="row">
+      <label class="inline">memory.max <input type="range" id="cgMem" min="64" max="1024" step="32" value="256" style="width:140px"> <b class="mono" id="cgMemV"></b></label>
+      <label class="inline">pids.max <input type="range" id="cgPids" min="5" max="60" value="20" style="width:120px"> <b class="mono" id="cgPidsV"></b></label>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <button type="button" id="cgAlloc" class="primary">▶ python: grow a bytearray</button>
+      <button type="button" id="cgFork">▶ fork bomb</button>
+      <button type="button" id="cgReset">reset</button>
+    </div>
+    <div class="stack" style="margin-top:12px; max-width:620px">
+      <div>cgroup <code>memory.current</code> <span class="mono" id="cgMemTxt"></span><div class="meter"><div id="cgMemBar"></div><span class="lim" id="cgMemLim"></span></div></div>
+      <div>cgroup <code>pids.current</code> <span class="mono" id="cgPidTxt"></span><div class="meter"><div id="cgPidBar"></div><span class="lim" id="cgPidLim" style="right:0"></span></div></div>
+      <div>host RAM in use (16 GiB machine) <span class="mono" id="cgHostTxt"></span><div class="meter"><div id="cgHostBar" style="background: var(--c-green)"></div></div></div>
+    </div>
+    <div class="log" id="cgLog" style="margin-top:10px; height:120px"></div>
+  </div>
+  <div class="demo">
+    <h3><code>cpu.max = "quota period"</code>: a CPU-hungry task over five 100 ms periods</h3>
+    <label class="inline">quota <input type="range" id="cpuQ" min="10" max="100" step="10" value="50" style="width:160px"> <b class="mono" id="cpuQV"></b></label>
+    <div class="tl" id="cpuTl" style="margin-top:10px; max-width:640px"></div>
+    <div class="legend" style="margin-top:6px"><span style="--sw: var(--c-green)">running</span><span style="--sw: var(--surface-2)">throttled until the next period</span></div>
+  </div>
+  <div class="demo">
+    <h3>v1 vs v2 hierarchy</h3>
+    <div class="views">
+      <div><b>cgroup v1</b>: one tree per controller<div class="tree" id="v1tree"></div></div>
+      <div><b>cgroup v2</b>: one unified tree, processes only in leaves<div class="tree" id="v2tree"></div></div>
+    </div>
+  </div>
+  <div class="connect">Connection: cpu.max is enforced by the scheduler's bandwidth control (3.6); memory.max ends in an OOM kill inside the group, exit 137 (6.8, 4.9); io.max uses device major:minor numbers (7.12).</div>
+</section>
+
+<section class="card" id="s10-3" data-title="10.3 docker run">
+  <h2><span class="num">10.3</span>How <code>docker run</code> Builds a Container</h2>
+  <p class="lead">Step through what <code>docker run -it --memory=512m alpine sh</code> boils down to. Every step is an ordinary kernel feature from earlier parts.</p>
+  <div class="demo">
+    <div class="pipe" id="drPipe"></div>
+    <div class="row" style="margin-top:12px"><button type="button" id="drPrev">◀ Prev</button><button type="button" id="drNext" class="primary">Next ▶</button><button type="button" id="drPlay">▶ Play</button><span class="hint" id="drCount"></span></div>
+    <ol class="steps" id="drSteps" style="margin-top:12px"></ol>
+  </div>
+  <div class="demo">
+    <h3>OverlayFS: read-only image layers + one writable layer</h3>
+    <p class="hint" style="margin:0 0 8px">Click a file in the merged view, then read, modify or delete it.</p>
+    <div class="row"><button type="button" id="ovRead">read</button><button type="button" id="ovMod" class="primary">modify</button><button type="button" id="ovDel">delete</button><button type="button" id="ovReset">reset</button></div>
+    <div class="layers" id="ovLayers" style="margin-top:10px"></div>
+    <p id="ovMsg" style="margin:10px 0 0"></p>
+  </div>
+  <div class="demo">
+    <h3>Container vs virtual machine</h3>
+    <table class="grid">
+      <tr><th></th><th>Container</th><th>Virtual machine</th></tr>
+      <tr><td>Kernel</td><td>Shares the <b>host kernel</b></td><td>Runs its <b>own kernel</b></td></tr>
+      <tr><td>Isolation from</td><td>namespaces, cgroups, capabilities, seccomp</td><td>CPU virtualization (VMX), EPT for memory (2.6)</td></tr>
+      <tr><td>Start-up</td><td>milliseconds (it's a process)</td><td>a full boot</td></tr>
+      <tr><td><code>uname -r</code> inside</td><td>the host's kernel version</td><td>the guest's kernel version</td></tr>
+      <tr><td>Kernel exploit</td><td>is a host exploit</td><td>stays inside the guest (unless it escapes the hypervisor)</td></tr>
+    </table>
+  </div>
+  <div class="connect">Connection: clone flags (4.9), bind mounts and pivot_root (7.13), copy-up is copy-on-write at file level (6.5), and a shared lower layer is shared in the page cache too (6.7).</div>
+</section>
+
+<section class="card" id="s10-4" data-title="10.4 Caps & seccomp">
+  <h2><span class="num">10.4</span>Capabilities and seccomp: What Am I Allowed to Do?</h2>
+  <p class="lead">Root's power split into separate capabilities, and a filter on the system-call entry path.</p>
+  <div class="demo">
+    <h3>Capabilities: tick what the process has</h3>
+    <div class="row"><span class="hint">presets:</span><button type="button" id="capNone">normal user (none)</button><button type="button" id="capDocker" class="primary">Docker default</button><button type="button" id="capAll">--privileged (all)</button></div>
+    <p class="hint" style="margin:8px 0 0">12 of the ~40 capabilities are shown. Docker's default keeps about 14 harmless ones; from this list it keeps the first seven.</p>
+    <div class="caps" id="capList" style="margin-top:10px"></div>
+    <div class="acts" id="capActs" style="margin-top:12px"></div>
+  </div>
+  <div class="demo">
+    <h3>seccomp: every syscall passes through the filter</h3>
+    <div class="row"><label class="inline">profile <select id="scProf"><option value="none">none (Seccomp: 0)</option><option value="docker" selected>Docker default (Seccomp: 2)</option><option value="strict">strict mode (Seccomp: 1)</option></select></label></div>
+    <div class="row sysbtns" id="scBtns" style="margin-top:10px; gap:6px"></div>
+    <div class="flow" id="scFlow" style="margin-top:12px"></div>
+    <p id="scMsg" style="margin:10px 0 0; font-weight:600"></p>
+  </div>
+  <div class="connect">Connection: capabilities live in <code>task_struct-&gt;cred</code> (4.2) and replace setuid root (7.11); seccomp runs at syscall entry (3.3); filters survive fork and exec and can only get stricter.</div>
+</section>
+
+</main>
+
+<footer class="pagenav">
+  <a href="part9-ipc.html">← Part 9: IPC</a>
+  <a href="index.html">All visuals</a>
+  <a href="part11-all-together.html">Part 11: All Together →</a>
+</footer>
+
+<script>
+(function () {
+  'use strict';
+
+  const $ = (id) => document.getElementById(id);
+  const h = (tag, props, ...kids) => {
+    const n = document.createElement(tag);
+    if (props) for (const k in props) {
+      if (k === 'class') n.className = props[k];
+      else if (k === 'style') n.style.cssText = props[k];
+      else if (k.startsWith('on')) n.addEventListener(k.slice(2), props[k]);
+      else n.setAttribute(k, props[k]);
+    }
+    for (const kid of kids.flat()) if (kid != null && kid !== false) n.append(kid);
+    return n;
+  };
+  const NS = 'http://www.w3.org/2000/svg';
+  const sv = (tag, attrs, text) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (text != null) e.textContent = text; return e; };
+  const hex = (n, w) => n.toString(16).toUpperCase().padStart(w, '0');
+  const bin = (n, w) => n.toString(2).padStart(w, '0');
+  const stat = (k, v, cls) => h('div', { class: 'stat' }, h('span', { class: 'k' }, k), h('span', { class: 'v ' + (cls || '') }, String(v)));
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  const themeBtn = $('themeBtn');
+  function applyTheme(t) {
+    document.documentElement.setAttribute('data-theme', t);
+    themeBtn.innerHTML = t === 'dark' ? '&#9728;' : '&#9790;';
+    themeBtn.title = t === 'dark' ? 'Switch to light mode' : 'Switch to dark mode';
+  }
+  applyTheme(document.documentElement.getAttribute('data-theme'));
+  themeBtn.addEventListener('click', () => {
+    const t = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+    try { localStorage.setItem('theme', t); } catch (e) {}
+    applyTheme(t);
+  });
+
+  const chips = $('chips');
+  const sections = [...document.querySelectorAll('section.card')];
+  sections.forEach((s) => chips.append(h('a', { href: '#' + s.id }, s.dataset.title)));
+  const chipLinks = [...chips.children];
+  const io = new IntersectionObserver((entries) => {
+    entries.forEach((e) => {
+      if (!e.isIntersecting) return;
+      chipLinks.forEach((a) => a.classList.toggle('active', a.getAttribute('href') === '#' + e.target.id));
+      const act = chips.querySelector('.active');
+      if (act) act.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    });
+  }, { rootMargin: '-45% 0px -50% 0px' });
+  sections.forEach((s) => io.observe(s));
+
+
+  /* ---------- namespaces ---------- */
+  const NSLIST = [['pid', 'PID', 'CLONE_NEWPID'], ['uts', 'UTS', 'CLONE_NEWUTS'], ['net', 'NET', 'CLONE_NEWNET'], ['mnt', 'MNT', 'CLONE_NEWNS'], ['user', 'USER', 'CLONE_NEWUSER']];
+  const ns = { pid: false, uts: false, net: false, mnt: false, user: false };
+  NSLIST.forEach(([k, label]) => $('nsBtns').append(h('button', { type: 'button', id: 'ns_' + k, onclick: () => { ns[k] = !ns[k]; drawNs(); } }, label)));
+  $('nsBtns').append(h('button', { type: 'button', onclick: () => { NSLIST.forEach(([k]) => (ns[k] = true)); drawNs(); } }, 'all'), h('button', { type: 'button', onclick: () => { NSLIST.forEach(([k]) => (ns[k] = false)); drawNs(); } }, 'none'));
+  function viewLines(inside) {
+    const c = (on, v) => (inside && on ? h('span', { class: 'chg' }, v) : v);
+    const L = [];
+    const kv = (k, v) => h('div', null, h('span', { class: 'k' }, k + ' '), v);
+    L.push(kv('$ hostname', c(ns.uts, inside && ns.uts ? 'a3f9c1e2b7d0' : 'berat-laptop')));
+    L.push(kv('$ id', c(ns.user, inside && ns.user ? 'uid=0(root)  [= uid 100000 on the host]' : 'uid=0(root)  [real root]')));
+    if (inside && ns.pid) {
+      L.push(kv('$ ps', c(true, 'PID 1 sh, PID 7 sleep, PID 8 ps')));
+    } else {
+      L.push(kv('$ ps', '1 systemd, 812 nginx, 2211 java, 31337 sh, 31343 sleep, …'));
+    }
+    L.push(kv('$ ip -br addr', c(ns.net, inside && ns.net ? 'lo 127.0.0.1, eth0 172.17.0.2' : 'lo, wlan0 192.168.1.20, docker0 172.17.0.1')));
+    L.push(kv('$ findmnt /', c(ns.mnt, inside && ns.mnt ? 'overlay (image layers + upper)' : '/dev/nvme0n1p2 ext4')));
+    L.push(kv('$ ls /home', c(ns.mnt, inside && ns.mnt ? '(empty: the image has no users)' : 'berat')));
+    return L;
+  }
+  function drawNs() {
+    NSLIST.forEach(([k]) => $('ns_' + k).classList.toggle('primary', ns[k]));
+    const flags = NSLIST.filter(([k]) => ns[k]).map((x) => x[2]);
+    $('nsFlags').textContent = flags.length ? 'clone(' + flags.join(' | ') + ' | SIGCHLD)' : 'no new namespaces: the "container" sees exactly what the host sees';
+    const host = $('vHost'), inn = $('vIn');
+    host.innerHTML = ''; inn.innerHTML = '';
+    host.append(h('h4', null, 'Host view (a root shell on the host)'), ...viewLines(false));
+    inn.append(h('h4', null, 'View from inside PID 31337' + (ns.pid ? ' (which thinks it is PID 1)' : '')), ...viewLines(true));
+  }
+  drawNs();
+
+  (function () {
+    const s = $('pidSvg'), fg = 'var(--text)', mu = 'var(--muted)';
+    s.append(sv('rect', { x: 10, y: 10, width: 620, height: 210, rx: 10, fill: 'var(--surface-2)', stroke: 'var(--border)' }));
+    s.append(sv('text', { x: 24, y: 32, 'font-size': 13, fill: fg, 'font-weight': 700 }, 'host (root) PID namespace: sees everything'));
+    [['1', 'systemd', 40], ['812', 'nginx', 140], ['2211', 'java', 240]].forEach(([p, n, x]) => {
+      s.append(sv('rect', { x, y: 50, width: 90, height: 40, rx: 6, fill: 'var(--bg)', stroke: 'var(--border)' }));
+      s.append(sv('text', { x: x + 45, y: 67, 'text-anchor': 'middle', 'font-size': 12, fill: fg }, 'PID ' + p));
+      s.append(sv('text', { x: x + 45, y: 83, 'text-anchor': 'middle', 'font-size': 11, fill: mu }, n));
+    });
+    s.append(sv('rect', { x: 350, y: 45, width: 265, height: 160, rx: 10, fill: 'var(--c-green-soft)', stroke: 'var(--c-green)' }));
+    s.append(sv('text', { x: 362, y: 66, 'font-size': 12, fill: fg, 'font-weight': 700 }, 'container PID namespace'));
+    [['31337', '1', 'sh', 370], ['31343', '7', 'sleep', 490]].forEach(([hp, cp, n, x]) => {
+      s.append(sv('rect', { x, y: 80, width: 110, height: 60, rx: 6, fill: 'var(--bg)', stroke: 'var(--c-green)' }));
+      s.append(sv('text', { x: x + 55, y: 100, 'text-anchor': 'middle', 'font-size': 12, fill: 'var(--c-green)', 'font-weight': 700 }, 'inside: ' + cp));
+      s.append(sv('text', { x: x + 55, y: 116, 'text-anchor': 'middle', 'font-size': 12, fill: fg }, 'host: ' + hp));
+      s.append(sv('text', { x: x + 55, y: 132, 'text-anchor': 'middle', 'font-size': 11, fill: mu }, n));
+    });
+    s.append(sv('text', { x: 482, y: 166, 'text-anchor': 'middle', 'font-size': 11, fill: mu }, 'sees only its own subtree'));
+    s.append(sv('text', { x: 482, y: 184, 'text-anchor': 'middle', 'font-size': 11, fill: mu }, 'PID 1 exits → all of these die'));
+    s.append(sv('text', { x: 24, y: 130, 'font-size': 12, fill: mu }, 'the host can signal 31337 normally;'));
+    s.append(sv('text', { x: 24, y: 148, 'font-size': 12, fill: mu }, 'SIGKILL from here reaches the'));
+    s.append(sv('text', { x: 24, y: 166, 'font-size': 12, fill: mu }, "container's PID 1 even without a handler"));
+  })();
+
+  (function () {
+    const s = $('netSvg'), fg = 'var(--text)', mu = 'var(--muted)';
+    const box = (x, w, t1, t2, fill, stroke) => {
+      s.append(sv('rect', { x, y: 40, width: w, height: 56, rx: 8, fill, stroke }));
+      s.append(sv('text', { x: x + w / 2, y: 64, 'text-anchor': 'middle', 'font-size': 12, fill: fg, 'font-weight': 700 }, t1));
+      s.append(sv('text', { x: x + w / 2, y: 82, 'text-anchor': 'middle', 'font-size': 11, fill: mu }, t2));
+    };
+    s.append(sv('rect', { x: 4, y: 20, width: 150, height: 96, rx: 10, fill: 'none', stroke: 'var(--c-green)', 'stroke-dasharray': '5 4' }));
+    s.append(sv('text', { x: 12, y: 14, 'font-size': 11, fill: 'var(--c-green)' }, 'container net namespace'));
+    box(14, 130, 'eth0', '172.17.0.2', 'var(--c-green-soft)', 'var(--c-green)');
+    box(194, 120, 'vethab12', 'host end of the pair', 'var(--bg)', 'var(--border)');
+    box(354, 130, 'docker0 bridge', '172.17.0.1', 'var(--c-blue-soft)', 'var(--c-blue)');
+    box(524, 150, 'NAT + wlan0', 'SNAT → 192.168.1.20', 'var(--c-amber-soft)', 'var(--c-amber)');
+    [[144, 194], [314, 354], [484, 524]].forEach(([a, b]) => s.append(sv('line', { x1: a, y1: 68, x2: b, y2: 68, stroke: 'var(--muted)', 'stroke-width': 2 })));
+    s.append(sv('text', { x: 169, y: 84, 'text-anchor': 'middle', 'font-size': 10, fill: mu }, 'veth'));
+    s.append(sv('text', { x: 340, y: 136, 'text-anchor': 'middle', 'font-size': 11, fill: mu }, 'netfilter POSTROUTING rewrites the source address on the way out (9.5)'));
+  })();
+
+  /* ---------- cgroups ---------- */
+  let cg, cgTimer = null;
+  function cglog(m) { const l = $('cgLog'); l.textContent += m + '\n'; l.scrollTop = l.scrollHeight; }
+  function cgDraw() {
+    const max = +$('cgMem').value, pmax = +$('cgPids').value;
+    $('cgMemV').textContent = max + 'M'; $('cgPidsV').textContent = pmax;
+    const scale = 1024;
+    $('cgMemBar').style.width = Math.min(100, (cg.mem / scale) * 100) + '%';
+    $('cgMemBar').classList.toggle('hot', cg.mem >= max * 0.9);
+    $('cgMemLim').style.left = (max / scale) * 100 + '%';
+    $('cgMemTxt').textContent = `${cg.mem}M / ${max}M`;
+    const pscale = 60;
+    $('cgPidBar').style.width = Math.min(100, (cg.pids / pscale) * 100) + '%';
+    $('cgPidBar').classList.toggle('hot', cg.pids >= pmax);
+    $('cgPidLim').style.left = (pmax / pscale) * 100 + '%';
+    $('cgPidLim').style.right = 'auto';
+    $('cgPidTxt').textContent = `${cg.pids} / ${pmax}`;
+    const host = 5.1 + cg.mem / 1024;
+    $('cgHostBar').style.width = (host / 16) * 100 + '%';
+    $('cgHostTxt').textContent = host.toFixed(1) + ' GiB / 16 GiB (plenty free)';
+  }
+  function cgReset() { clearInterval(cgTimer); cg = { mem: 20, pids: 1 }; $('cgLog').textContent = '$ echo $$ > /sys/fs/cgroup/demo/cgroup.procs   # this shell is now in the cgroup\n'; cgDraw(); }
+  $('cgAlloc').addEventListener('click', () => {
+    clearInterval(cgTimer); cg.mem = 20; cg.pids = Math.max(cg.pids, 1);
+    cglog('$ python3 -c "x = bytearray(500*1024*1024)"   # touches pages as it fills them');
+    cgTimer = setInterval(() => {
+      const max = +$('cgMem').value;
+      cg.mem += 32;
+      if (cg.mem >= max) {
+        cg.mem = max; cgDraw();
+        cglog(`memory.current hit memory.max (${max}M): kernel reclaims inside the cgroup, nothing left to reclaim`);
+        cglog('OOM killer runs INSIDE the cgroup -> SIGKILL -> "Killed", exit status 137. memory.events: oom_kill 1');
+        clearInterval(cgTimer);
+        setTimeout(() => { cg.mem = 20; cgDraw(); cglog('the host never noticed: its free memory was fine the whole time'); }, 900);
+        return;
+      }
+      if (cg.mem >= 520) { cgDraw(); cglog('bytearray allocated (500M fits under the limit)'); clearInterval(cgTimer); return; }
+      cgDraw();
+    }, 160);
+  });
+  $('cgFork').addEventListener('click', () => {
+    clearInterval(cgTimer);
+    cglog('$ :(){ :|:& };:   # fork bomb: every process forks two more');
+    cgTimer = setInterval(() => {
+      const pmax = +$('cgPids').value;
+      cg.pids = Math.min(pmax, cg.pids * 2);
+      cgDraw();
+      if (cg.pids >= pmax) { cglog(`pids.current = pids.max (${pmax}): further fork()/clone() fail with EAGAIN ("Resource temporarily unavailable"). The host stays responsive.`); clearInterval(cgTimer); }
+    }, 300);
+  });
+  $('cgReset').addEventListener('click', cgReset);
+  ['cgMem', 'cgPids'].forEach((id) => $(id).addEventListener('input', cgDraw));
+  cgReset();
+
+  function cpuDraw() {
+    const q = +$('cpuQ').value;
+    $('cpuQV').textContent = `${q * 1000} 100000  (${q}% of one CPU)`;
+    const tl = $('cpuTl'); tl.innerHTML = '';
+    for (let i = 0; i < 5; i++) tl.append(h('div', { class: 'per', title: `period ${i + 1}` }, h('div', { class: 'run', style: `flex:${q}` }), h('div', { class: 'thr', style: `flex:${100 - q}` })));
+  }
+  $('cpuQ').addEventListener('input', cpuDraw);
+  cpuDraw();
+
+  $('v1tree').textContent = '/sys/fs/cgroup/memory/\n  docker/<id>/   <- task 31337\n/sys/fs/cgroup/cpu/\n  docker/<id>/   <- task 31337\n/sys/fs/cgroup/pids/\n  user.slice/    <- task 31337 (could be elsewhere!)';
+  $('v2tree').textContent = '/sys/fs/cgroup/\n  system.slice/\n    docker-<id>.scope/   <- task 31337\n      memory.max  cpu.max  pids.max  io.max\n  user.slice/\n    user-1000.slice/ ...';
+
+  /* ---------- docker run stepper ---------- */
+  const COMPS = ['docker CLI', 'dockerd', 'containerd', 'containerd-shim', 'runc', 'kernel', 'sh (PID 1)'];
+  const DR = [
+    [0, 'docker CLI sends the request over HTTP on /run/docker.sock (a Unix socket, 9.2).'],
+    [1, 'dockerd pulls/prepares the alpine image and hands the container to containerd.'],
+    [2, 'containerd starts a containerd-shim, which will stay as the container\'s parent (a subreaper, 4.5).'],
+    [4, 'runc: assemble the root filesystem with OVERLAYFS: read-only image layers + one writable layer.'],
+    [5, 'clone(CLONE_NEWNS | CLONE_NEWPID | CLONE_NEWNET | CLONE_NEWUTS | CLONE_NEWIPC ...): a child in new namespaces (10.1, 4.9).'],
+    [5, 'Create a cgroup, write memory.max = 512M (plus cpu.max, pids.max), and move the child into it (10.2).'],
+    [5, 'Network: create a veth pair, move one end into the new net namespace as eth0; bridge + NAT on the host.'],
+    [5, 'Inside the new mount namespace: mount /proc, /sys, /dev, /dev/pts, /dev/shm; bind-mount volumes and /etc/resolv.conf, hostname, hosts (7.13).'],
+    [5, 'pivot_root() into the overlay rootfs and unmount the old root (task_struct->fs->root, 4.2). sethostname().'],
+    [5, 'Drop capabilities to Docker\'s small default set (10.4).'],
+    [5, 'Install the seccomp filter (10.4).'],
+    [6, 'Set the user, then execve("/bin/sh"): it becomes PID 1 inside the container. From the host it is just a process (4.9).'],
+  ];
+  let dr = 0, drTimer = null;
+  function drDraw() {
+    const p = $('drPipe'); p.innerHTML = '';
+    COMPS.forEach((c, i) => { if (i) p.append(h('span', { class: 'ar' }, '→')); p.append(h('span', { class: 'comp' + (i === DR[dr][0] ? ' cur' : '') }, c)); });
+    const ol = $('drSteps'); ol.innerHTML = '';
+    DR.forEach((s, i) => ol.append(h('li', { class: i === dr ? 'cur' : i < dr ? 'done' : '', onclick: () => { dr = i; drDraw(); } }, `${i + 1}. ${s[1]}`)));
+    $('drCount').textContent = `step ${dr + 1} / ${DR.length}`;
+  }
+  $('drNext').addEventListener('click', () => { dr = Math.min(DR.length - 1, dr + 1); drDraw(); });
+  $('drPrev').addEventListener('click', () => { dr = Math.max(0, dr - 1); drDraw(); });
+  $('drPlay').addEventListener('click', () => { clearInterval(drTimer); dr = 0; drDraw(); drTimer = setInterval(() => { if (dr >= DR.length - 1) { clearInterval(drTimer); return; } dr++; drDraw(); }, 1500); });
+  drDraw();
+
+  /* ---------- overlayfs ---------- */
+  const LOWER = [
+    ['image layer 2 (app)', ['/app/server.py', '/etc/nginx.conf']],
+    ['image layer 1 (base: alpine)', ['/bin/sh', '/etc/os-release', '/etc/nginx.conf']],
+  ];
+  let ov;
+  function ovReset() { ov = { upper: {}, sel: '/etc/nginx.conf', served: null }; $('ovMsg').textContent = 'The merged view is what the container sees as /. The topmost layer that has a file wins.'; ovDraw(); }
+  function mergedFiles() {
+    const all = new Set();
+    LOWER.forEach(([, fs]) => fs.forEach((f) => all.add(f)));
+    Object.keys(ov.upper).forEach((f) => all.add(f));
+    return [...all].sort();
+  }
+  function whereIs(f) {
+    if (ov.upper[f] === 'whiteout') return 'deleted';
+    if (ov.upper[f]) return 'upper';
+    for (const [name, fs] of LOWER) if (fs.includes(f)) return name;
+    return null;
+  }
+  function ovDraw() {
+    const box = $('ovLayers'); box.innerHTML = '';
+    const merged = h('div', { class: 'layer merged' }, h('h5', null, 'merged view (the container\'s /)'));
+    mergedFiles().forEach((f) => {
+      const w = whereIs(f);
+      merged.append(h('span', { class: 'fchip' + (f === ov.sel ? ' sel' : '') + (w === 'deleted' ? ' hidden' : ''), onclick: () => { if (w !== 'deleted') { ov.sel = f; ov.served = null; ovDraw(); } } }, f));
+    });
+    const up = h('div', { class: 'layer upper' }, h('h5', null, 'upper layer (writable, this container only)'));
+    const ups = Object.keys(ov.upper);
+    if (!ups.length) up.append(h('span', { class: 'hint' }, '(empty)'));
+    ups.forEach((f) => up.append(h('span', { class: 'fchip' + (ov.upper[f] === 'whiteout' ? ' wh' : '') + (ov.served && ov.served[0] === 'upper' && ov.served[1] === f ? ' served' : '') }, ov.upper[f] === 'whiteout' ? 'whiteout: ' + f : f + ' (copy)')));
+    box.append(merged, up);
+    LOWER.forEach(([name, fs]) => {
+      const l = h('div', { class: 'layer' }, h('h5', null, name + ' (read-only, shared by every container from this image)'));
+      fs.forEach((f) => l.append(h('span', { class: 'fchip' + (ov.served && ov.served[0] === name && ov.served[1] === f ? ' served' : '') }, f)));
+      box.append(l);
+    });
+  }
+  $('ovRead').addEventListener('click', () => { const w = whereIs(ov.sel); ov.served = [w, ov.sel]; ovDraw(); $('ovMsg').textContent = `read ${ov.sel}: served from "${w}", the topmost layer that has it. Nothing is copied.`; });
+  $('ovMod').addEventListener('click', () => {
+    const w = whereIs(ov.sel);
+    if (w === 'upper') { ov.served = ['upper', ov.sel]; ovDraw(); $('ovMsg').textContent = `${ov.sel} is already in the upper layer: written there directly.`; return; }
+    ov.upper[ov.sel] = 'copy'; ov.served = ['upper', ov.sel]; ovDraw();
+    $('ovMsg').textContent = `COPY-UP: ${ov.sel} is first copied from "${w}" into the upper layer, then modified there. The image layer is untouched (copy-on-write at file level).`;
+  });
+  $('ovDel').addEventListener('click', () => {
+    const f = ov.sel; ov.upper[f] = 'whiteout'; ov.served = null;
+    const next = mergedFiles().find((x) => whereIs(x) !== 'deleted'); ov.sel = next; ovDraw();
+    $('ovMsg').textContent = `delete ${f}: the lower layers are read-only, so a WHITEOUT marker is created in the upper layer to hide the file from the merged view.`;
+  });
+  $('ovReset').addEventListener('click', ovReset);
+  ovReset();
+
+  /* ---------- capabilities ---------- */
+  const CAPS = ['CAP_CHOWN', 'CAP_DAC_OVERRIDE', 'CAP_KILL', 'CAP_SETUID', 'CAP_SETGID', 'CAP_NET_BIND_SERVICE', 'CAP_NET_RAW', 'CAP_NET_ADMIN', 'CAP_SYS_ADMIN', 'CAP_SYS_PTRACE', 'CAP_SYS_MODULE', 'CAP_SYS_NICE'];
+  const DOCKER = ['CAP_CHOWN', 'CAP_DAC_OVERRIDE', 'CAP_KILL', 'CAP_SETUID', 'CAP_SETGID', 'CAP_NET_BIND_SERVICE', 'CAP_NET_RAW'];
+  const ACTS = [
+    ['bind to port 80', 'CAP_NET_BIND_SERVICE'], ['ping (open a raw socket)', 'CAP_NET_RAW'], ['add a route / change iptables', 'CAP_NET_ADMIN'],
+    ['mount a filesystem', 'CAP_SYS_ADMIN'], ['load a kernel module', 'CAP_SYS_MODULE'], ["strace another user's process", 'CAP_SYS_PTRACE'],
+    ['renice -n -5 (raise priority)', 'CAP_SYS_NICE'], ['chown a file to another user', 'CAP_CHOWN'], ['read a file without permission', 'CAP_DAC_OVERRIDE'],
+    ["kill another user's process", 'CAP_KILL'], ['switch to another UID (setuid)', 'CAP_SETUID'],
+  ];
+  const have = new Set(DOCKER);
+  CAPS.forEach((c) => $('capList').append(h('label', { class: 'inline' }, h('input', { type: 'checkbox', 'data-cap': c, onchange: (e) => { e.target.checked ? have.add(c) : have.delete(c); capPreset(null); capDraw(); } }), c)));
+  function capPreset(which) { ['capNone', 'capDocker', 'capAll'].forEach((id) => $(id).classList.toggle('primary', id === which)); }
+  function capDraw() {
+    document.querySelectorAll('[data-cap]').forEach((cb) => (cb.checked = have.has(cb.dataset.cap)));
+    const a = $('capActs'); a.innerHTML = '';
+    ACTS.forEach(([t, c]) => { const ok = have.has(c); a.append(h('div', { class: 'act ' + (ok ? 'yes' : 'no') }, h('div', null, t), h('span', { class: 'res ' + (ok ? 'ok' : 'bad') }, ok ? '✓ allowed' : `✗ EPERM: needs ${c}`))); });
+  }
+  $('capNone').addEventListener('click', () => { have.clear(); capPreset('capNone'); capDraw(); });
+  $('capDocker').addEventListener('click', () => { have.clear(); DOCKER.forEach((c) => have.add(c)); capPreset('capDocker'); capDraw(); });
+  $('capAll').addEventListener('click', () => { CAPS.forEach((c) => have.add(c)); capPreset('capAll'); capDraw(); });
+  capDraw();
+
+  /* ---------- seccomp ---------- */
+  const SYS = ['read', 'write', 'openat', 'mmap', 'clone', 'exit', 'mount', 'reboot', 'init_module', 'kexec_load', 'keyctl', 'bpf'];
+  const DOCKER_BLOCK = ['mount', 'reboot', 'init_module', 'kexec_load', 'keyctl', 'bpf'];
+  const STRICT_OK = ['read', 'write', 'exit'];
+  let scBusy = false;
+  SYS.forEach((s) => $('scBtns').append(h('button', { type: 'button', onclick: () => scRun(s) }, s + '()')));
+  async function scRun(name) {
+    if (scBusy) return; scBusy = true;
+    const prof = $('scProf').value;
+    let verdict, cls;
+    if (prof === 'none') { verdict = 'ALLOW (no filter installed)'; cls = 'ok'; }
+    else if (prof === 'strict') { verdict = STRICT_OK.includes(name) ? 'ALLOW' : 'KILL: strict mode allows only read, write, exit and sigreturn → SIGKILL'; cls = STRICT_OK.includes(name) ? 'ok' : 'bad'; }
+    else { verdict = DOCKER_BLOCK.includes(name) ? 'ERRNO(EPERM): blocked by the Docker default profile' : 'ALLOW'; cls = DOCKER_BLOCK.includes(name) ? 'bad' : 'ok'; }
+    const f = $('scFlow'); f.innerHTML = '';
+    const stages = [`syscall(${name})`, 'entry_SYSCALL_64', prof === 'none' ? 'no filter' : 'seccomp BPF filter', verdict.startsWith('ALLOW') ? `sys_${name}() runs` : verdict.split(':')[0]];
+    const els = stages.map((t) => h('span', { class: 'st' }, t));
+    els.forEach((e, i) => { if (i) f.append(h('span', { class: 'ar', style: 'color:var(--muted)' }, '→')); f.append(e); });
+    $('scMsg').textContent = '';
+    for (const e of els) { e.classList.add('lit'); await sleep(320); e.classList.remove('lit'); }
+    els[els.length - 1].classList.add('lit');
+    $('scMsg').textContent = verdict;
+    $('scMsg').className = cls;
+    scBusy = false;
+  }
+  scRun('mount');
+
+})();
+</script>
+</body>
+</html>

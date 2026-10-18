@@ -1,0 +1,551 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>The Big Picture, Visualized</title>
+<meta name="description" content="Interactive map of how a Linux system fits together: layers, the three illusions, and task_struct as the hub.">
+<script>
+  (function () {
+    var saved = null;
+    try { saved = localStorage.getItem('theme'); } catch (e) {}
+    var dark = saved ? saved === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches;
+    document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+  })();
+</script>
+<style>
+  :root {
+    --bg: #ffffff; --surface: #f6f8fa; --surface-2: #eaeef2; --text: #1f2328; --muted: #59636e;
+    --border: #d0d7de; --accent: #0969da; --accent-soft: #ddf4ff;
+    --c-blue: #0969da; --c-pink: #bf3989; --c-green: #1a7f37; --c-amber: #9a6700; --c-purple: #8250df; --c-red: #cf222e;
+    --c-blue-soft: #ddf4ff; --c-pink-soft: #ffeff7; --c-green-soft: #dafbe1; --c-amber-soft: #fff8c5; --c-purple-soft: #fbefff; --c-red-soft: #ffebe9;
+    --hatch: repeating-linear-gradient(45deg, transparent 0 4px, rgba(130,80,223,.22) 4px 7px);
+    --radius: 8px;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  html[data-theme="dark"] {
+    --bg: #0d1117; --surface: #151b23; --surface-2: #212830; --text: #e6edf3; --muted: #9198a1;
+    --border: #3d444d; --accent: #4493f8; --accent-soft: rgba(56,139,253,.15);
+    --c-blue: #4493f8; --c-pink: #f778ba; --c-green: #3fb950; --c-amber: #d29922; --c-purple: #ab7df8; --c-red: #f85149;
+    --c-blue-soft: rgba(56,139,253,.18); --c-pink-soft: rgba(247,120,186,.16); --c-green-soft: rgba(63,185,80,.16);
+    --c-amber-soft: rgba(210,153,34,.18); --c-purple-soft: rgba(171,125,248,.18); --c-red-soft: rgba(248,81,73,.16);
+    --hatch: repeating-linear-gradient(45deg, transparent 0 4px, rgba(171,125,248,.30) 4px 7px);
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif; }
+  a { color: var(--accent); }
+  code, .mono { font-family: var(--mono); font-size: .92em; }
+  code { background: var(--surface-2); padding: .1em .35em; border-radius: 4px; }
+
+  header.top { max-width: 1040px; margin: 0 auto; padding: 32px 16px 8px; }
+  header.top h1 { margin: 0 0 6px; font-size: clamp(28px, 5vw, 40px); line-height: 1.15; }
+  header.top p { margin: 0 0 8px; color: var(--muted); max-width: 70ch; }
+  .backlink { font-size: 14px; }
+
+  nav.chips { position: sticky; top: 0; z-index: 10; background: var(--bg); border-bottom: 1px solid var(--border); }
+  nav.chips .inner { max-width: 1040px; margin: 0 auto; padding: 8px 16px; display: flex; gap: 6px; overflow-x: auto; scrollbar-width: thin; }
+  nav.chips a { flex: none; font-size: 13px; padding: 4px 10px; border: 1px solid var(--border); border-radius: 999px;
+                color: var(--text); text-decoration: none; background: var(--surface); white-space: nowrap; }
+  nav.chips a:hover, nav.chips a.active { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+
+  main { max-width: 1040px; margin: 0 auto; padding: 8px 16px 64px; }
+  section.card { border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin: 24px 0; background: var(--bg); scroll-margin-top: 56px; }
+  section.card > h2 { margin: 0 0 4px; font-size: 22px; }
+  section.card > h2 .num { color: var(--muted); font-weight: 500; margin-right: 6px; }
+  .lead { color: var(--muted); margin: 0 0 16px; max-width: 75ch; }
+  .demo { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; margin: 12px 0; overflow-x: auto; }
+  .demo h3 { margin: 0 0 10px; font-size: 15px; }
+  .row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+  .stack { display: flex; flex-direction: column; gap: 10px; }
+  .connect { font-size: 14px; color: var(--muted); border-left: 3px solid var(--accent); padding: 4px 0 4px 10px; margin-top: 14px; }
+  .hint { font-size: 13px; color: var(--muted); }
+  .big { font-family: var(--mono); font-size: 22px; font-weight: 600; }
+  .stat { display: inline-flex; flex-direction: column; padding: 6px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg); min-width: 90px; }
+  .stat .k { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  .stat .v { font-family: var(--mono); font-size: 18px; font-weight: 600; }
+  .ok { color: var(--c-green); } .bad { color: var(--c-red); } .warn { color: var(--c-amber); }
+
+  button, select, input[type="text"], input[type="number"] {
+    font: inherit; font-size: 14px; color: var(--text); background: var(--bg);
+    border: 1px solid var(--border); border-radius: 6px; padding: 5px 10px;
+  }
+  button { cursor: pointer; }
+  button:hover { background: var(--surface-2); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover { filter: brightness(1.08); background: var(--accent); }
+  button:focus-visible, select:focus-visible, input:focus-visible, .bit:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  input[type="range"] { accent-color: var(--accent); width: min(360px, 100%); }
+  label.inline { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; }
+
+  /* bits */
+  .bits { display: inline-flex; gap: 4px; flex-wrap: nowrap; }
+  .bitcol { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+  .bit { width: 34px; height: 40px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg);
+         font: 600 18px var(--mono); color: var(--muted); cursor: pointer; padding: 0; transition: background .12s, color .12s; }
+  .bit.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .bit.sm { width: 22px; height: 30px; font-size: 14px; }
+  .bitcol .w { font: 11px var(--mono); color: var(--muted); }
+  .nibble { display: inline-flex; flex-direction: column; align-items: center; gap: 6px; padding: 6px; border: 1px dashed var(--border); border-radius: 8px; }
+  .nibble .hx { font: 700 22px var(--mono); color: var(--c-pink); }
+  .gap { width: 10px; }
+
+  /* byte cells */
+  .cells { display: grid; gap: 2px; }
+  .cell { height: 30px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg);
+          font: 11px var(--mono); color: var(--muted); display: flex; align-items: center; justify-content: center; position: relative; }
+  .cell.hl { background: var(--c-blue-soft); border-color: var(--c-blue); color: var(--text); font-weight: 600; }
+  .cell.hl2 { background: var(--c-pink-soft); border-color: var(--c-pink); color: var(--text); }
+  .cell.pad { background: var(--hatch), var(--bg); border-style: dashed; }
+  .cell.line { background: var(--c-amber-soft); }
+  .cell.boxstart { margin-left: 6px; }
+  .cell.lineb { box-shadow: -4px 0 0 0 var(--c-red); margin-left: 8px; }
+
+  table.mem { border-collapse: collapse; font-family: var(--mono); font-size: 14px; }
+  table.mem th, table.mem td { border: 1px solid var(--border); padding: 4px 10px; text-align: center; }
+  table.mem th { background: var(--surface-2); font-weight: 600; font-family: inherit; font-size: 13px; }
+
+  .tiles { display: grid; gap: 1px; }
+  .tile { width: 9px; height: 9px; background: var(--surface-2); border-radius: 1px; }
+  .tile.mark { background: var(--c-pink); }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 13px; color: var(--muted); }
+  .legend span::before { content: ""; display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 5px; vertical-align: -2px; background: var(--sw); border: 1px solid var(--border); }
+
+  /* address space */
+  .addrspace { display: grid; grid-template-columns: 120px 1fr; gap: 0; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; font-size: 13px; max-width: 560px; }
+  .addrspace > div { padding: 8px 10px; border-bottom: 1px solid var(--border); }
+  .addrspace .lbl { font-family: var(--mono); font-size: 11px; color: var(--muted); background: var(--surface-2); }
+  .addrspace .zone.kern { background: var(--c-purple-soft); }
+  .addrspace .zone.hole { background: var(--hatch), var(--bg); color: var(--muted); }
+  .addrspace .zone.user { background: var(--c-green-soft); }
+  .addrspace .zone.here { outline: 3px solid var(--accent); outline-offset: -3px; font-weight: 600; }
+  .bar { height: 26px; border-radius: 6px; display: flex; overflow: hidden; border: 1px solid var(--border); font-size: 12px; }
+  .bar > div { display: flex; align-items: center; justify-content: center; color: var(--text); white-space: nowrap; overflow: hidden; }
+  .logbar { display: grid; grid-template-columns: 110px 1fr 90px; gap: 6px 10px; align-items: center; font-size: 13px; }
+  .logbar .fill { height: 14px; border-radius: 4px; background: var(--accent); }
+
+  /* struct */
+  .fields { display: flex; flex-direction: column; gap: 6px; }
+  .field { display: flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 14px; }
+  .field .sw { width: 14px; height: 14px; border-radius: 3px; }
+  .field button { padding: 2px 8px; font-size: 13px; }
+  .structgrid { display: grid; grid-template-columns: 56px repeat(8, minmax(38px, 1fr)); gap: 3px; align-items: center; max-width: 520px; }
+  .structgrid .off { font: 11px var(--mono); color: var(--muted); text-align: right; padding-right: 6px; }
+  .structgrid .cell { height: 34px; font-size: 12px; color: var(--text); }
+
+  /* matrix sim */
+  .matrix { display: grid; grid-template-columns: repeat(8, 30px); gap: 3px; }
+  .matrix .cell { height: 30px; transition: background .1s; }
+  .matrix .cell.cached { background: var(--c-blue-soft); }
+  .matrix .cell.hit { background: var(--c-green); color: #fff; border-color: var(--c-green); }
+  .matrix .cell.miss { background: var(--c-red); color: #fff; border-color: var(--c-red); }
+  .matrix .cell.gb { margin-left: 5px; }
+
+  .cores { display: grid; grid-template-columns: repeat(2, minmax(160px, 1fr)); gap: 12px; max-width: 560px; }
+  .core { border: 1px solid var(--border); border-radius: 8px; padding: 10px; background: var(--bg); transition: box-shadow .15s; }
+  .core.flash { box-shadow: 0 0 0 3px var(--c-red); }
+  .core h4 { margin: 0 0 6px; font-size: 14px; }
+  .state { font: 600 13px var(--mono); padding: 2px 6px; border-radius: 4px; }
+  .state.M { background: var(--c-green-soft); color: var(--c-green); }
+  .state.I { background: var(--c-red-soft); color: var(--c-red); }
+  .state.S { background: var(--c-blue-soft); color: var(--c-blue); }
+  .state.none { background: var(--surface-2); color: var(--muted); }
+
+  /* float */
+  .fbits { display: flex; flex-wrap: wrap; gap: 2px; }
+  .fbits .bit { width: 20px; height: 30px; font-size: 13px; }
+  .fbits .bit.s { --tone: var(--c-red); } .fbits .bit.e { --tone: var(--c-blue); } .fbits .bit.f { --tone: var(--c-green); }
+  .fbits .bit { border-color: var(--tone); color: var(--tone); }
+  .fbits .bit.on { background: var(--tone); color: #fff; }
+  .fbits .sep { width: 8px; }
+  .exact { font-family: var(--mono); font-size: 13px; word-break: break-all; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; }
+
+  /* utf8 */
+  .cps { display: flex; flex-wrap: wrap; gap: 10px; }
+  .cp { border: 1px solid var(--border); border-radius: 8px; background: var(--bg); padding: 10px; min-width: 150px; }
+  .cp .ch { font-size: 30px; line-height: 1.1; }
+  .cp .u { font: 600 13px var(--mono); color: var(--c-purple); }
+  .cp .bytes { font: 13px var(--mono); margin-top: 6px; }
+  .cp .pre { color: var(--muted); }
+  .cp .pay { color: var(--c-green); font-weight: 600; }
+  .cp .hexb { color: var(--c-pink); }
+
+  svg text { font-family: var(--mono); }
+  .theme-btn { position: fixed; top: 10px; right: 12px; z-index: 20; width: 34px; height: 34px; padding: 0; font-size: 16px; }
+  @media (max-width: 600px) {
+    section.card { padding: 14px; }
+    .bit { width: 30px; height: 36px; font-size: 16px; }
+    .structgrid { grid-template-columns: 44px repeat(8, minmax(28px, 1fr)); }
+  }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+<style>
+  footer.pnav { max-width: 1040px; margin: 0 auto; padding: 0 16px 48px; display: flex; flex-wrap: wrap; gap: 10px; justify-content: space-between; font-size: 14px; }
+  footer.pnav a { padding: 6px 12px; border: 1px solid var(--border); border-radius: 999px; text-decoration: none; background: var(--surface); }
+  footer.pnav a:hover { border-color: var(--accent); background: var(--accent-soft); }
+
+  .layers { display: flex; flex-direction: column; gap: 0; max-width: 760px; }
+  .layer { border: 2px solid var(--border); border-radius: 10px; padding: 12px 14px; cursor: pointer; text-align: left; width: 100%;
+           background: var(--bg); color: var(--text); font: inherit; transition: box-shadow .15s, border-color .15s; }
+  .layer:hover { border-color: var(--accent); }
+  .layer.sel, .arrow.sel { box-shadow: 0 0 0 3px var(--accent); border-color: var(--accent); }
+  .layer.user { background: var(--c-green-soft); }
+  .layer.kern { background: var(--c-purple-soft); }
+  .layer.hw   { background: var(--c-amber-soft); }
+  .layer .t { font-weight: 700; }
+  .layer .d { font-size: 13px; color: var(--muted); }
+  .layer .chipsrow { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .layer .mini { font: 12px var(--mono); padding: 2px 8px; border: 1px solid var(--border); border-radius: 999px; background: var(--bg); }
+  .arrows { display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; padding: 8px 0; }
+  .arrow { font-size: 13px; padding: 4px 10px; border-radius: 999px; border: 1px dashed var(--border); background: var(--surface); }
+  .arrow.flow { border-style: solid; border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+  .info { border: 1px solid var(--border); border-left: 4px solid var(--accent); border-radius: 8px; background: var(--bg); padding: 12px 14px; min-height: 92px; }
+  .info h4 { margin: 0 0 6px; font-size: 16px; }
+  .info p { margin: 0 0 6px; }
+  .info .refs { font-size: 13px; color: var(--muted); }
+  .layer.flow { box-shadow: 0 0 0 3px var(--c-pink); }
+
+  .ill { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; }
+  .illcard { border: 1px solid var(--border); border-radius: 10px; background: var(--bg); padding: 12px; }
+  .illcard h4 { margin: 0 0 8px; }
+  .seg { display: inline-flex; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; margin-bottom: 10px; }
+  .seg button { border: 0; border-radius: 0; }
+  .seg button.on { background: var(--accent); color: #fff; }
+  .timeline { display: flex; height: 30px; border-radius: 6px; overflow: hidden; border: 1px solid var(--border); }
+  .timeline > div { display: flex; align-items: center; justify-content: center; font: 11px var(--mono); color: var(--text); }
+  .vmap { display: grid; grid-template-columns: 1fr 40px 1fr; gap: 0; align-items: stretch; font: 11px var(--mono); }
+  .vcol { display: flex; flex-direction: column; gap: 3px; }
+  .vcol div { height: 18px; border-radius: 3px; display: flex; align-items: center; justify-content: center; border: 1px solid var(--border); }
+  .illcard ul { margin: 6px 0 0; padding-left: 18px; font-size: 14px; }
+  .breaks { font-size: 13px; color: var(--muted); margin-top: 8px; }
+
+  .hub { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 8px; }
+  .hubcenter { grid-column: 1 / -1; text-align: center; font: 700 18px var(--mono); padding: 10px; border: 2px solid var(--accent); border-radius: 10px; background: var(--accent-soft); }
+  .fieldbtn { text-align: left; padding: 8px 10px; }
+  .fieldbtn .fn { font: 600 14px var(--mono); display: block; }
+  .fieldbtn .fd { font-size: 12px; color: var(--muted); }
+  .fieldbtn.sel { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
+  .chain { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin: 8px 0; }
+  .chain .node { font: 13px var(--mono); padding: 6px 10px; border-radius: 6px; border: 1px solid var(--border); background: var(--surface); }
+  .chain .node:first-child { border-color: var(--accent); }
+  .chain .ar { color: var(--muted); }
+
+  .parts { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 10px; }
+  .ptile { display: block; text-decoration: none; color: var(--text); border: 1px solid var(--border); border-radius: 10px; padding: 10px 12px; background: var(--bg); border-top: 4px solid var(--g); }
+  .ptile:hover { box-shadow: 0 0 0 2px var(--g); }
+  .ptile .pn { font: 700 13px var(--mono); color: var(--muted); }
+  .ptile .pt { font-weight: 600; }
+  .ptile .pd { font-size: 12px; color: var(--muted); }
+  .ptile.dim { opacity: .35; }
+  .ptile.dep { box-shadow: 0 0 0 2px var(--g); }
+</style>
+</head>
+<body>
+<button class="theme-btn" id="themeBtn" type="button" aria-label="Toggle dark mode"></button>
+<header class="top">
+  <a class="backlink" href="../#0-the-big-picture-how-everything-connects">← Back to the notes: Part 0</a>
+  <h1>The Big Picture, Visualized</h1>
+  <p>How the pieces of a Linux system fit together. Click the layers, the arrows between them, and the fields of <code>task_struct</code>.</p>
+</header>
+
+<nav class="chips" aria-label="Sections"><div class="inner" id="chips"></div></nav>
+
+<main>
+
+<section class="card" id="s0-0" data-title="0 Layers">
+  <h2><span class="num">0</span>Three Levels: Hardware, Kernel, User Space</h2>
+  <p class="lead">Everything you'll learn lives in one of these layers or in a doorway between them. Click any layer or arrow. Or press <b>Trace a read()</b> to watch one call cross every boundary.</p>
+  <div class="demo">
+    <div class="row" style="margin-bottom:10px">
+      <button type="button" class="primary" id="traceBtn">▶ Trace a read() from disk</button>
+      <button type="button" id="traceReset">Reset</button>
+      <span class="hint" id="traceStep"></span>
+    </div>
+    <div class="row" style="align-items:flex-start; gap:16px">
+      <div class="layers" id="layers" style="flex: 1 1 420px"></div>
+      <div class="info" id="info0" style="flex: 1 1 260px"></div>
+    </div>
+  </div>
+  <div class="connect">Connection: every later part zooms into one box or one arrow of this diagram. Part 11 traces a full pipeline through all of them.</div>
+</section>
+
+<section class="card" id="s0-1" data-title="0.1 Illusions">
+  <h2><span class="num">0.1</span>The Three Illusions</h2>
+  <p class="lead">The kernel's main job: make every process believe it has a machine to itself. Flip each card between what the process <em>believes</em> and what's <em>really</em> happening.</p>
+  <div class="ill" id="ill"></div>
+  <div class="connect">Connection: when illusions break, you get classic bugs: race conditions (Part 5), <code>df</code> vs <code>du</code> (Part 7), a shared file offset after <code>fork</code> (7.2).</div>
+</section>
+
+<section class="card" id="s0-2" data-title="0.2 task_struct">
+  <h2><span class="num">0.2</span>task_struct: The Hub Everything Hangs Off</h2>
+  <p class="lead">In Linux, every thread of every process is one <code>struct task_struct</code>. Almost every topic is "a field of task_struct and what it points to". Click a field.</p>
+  <div class="demo">
+    <div class="hub" id="hub"><div class="hubcenter">struct task_struct</div></div>
+    <div class="info" id="info2" style="margin-top:12px"></div>
+  </div>
+  <div class="connect">Connection: <code>current</code> is the task_struct running on this CPU; a syscall like <code>read(3, …)</code> finds "your fd 3" through <code>current-&gt;files</code>.</div>
+</section>
+
+<section class="card" id="s0-3" data-title="0.3 Reading order">
+  <h2><span class="num">0.3</span>Reading Order</h2>
+  <p class="lead">Each part builds on earlier ones. Hover or tap a part to highlight the earlier parts it leans on most (a rough guide, not a strict rule); click through to its visual page.</p>
+  <div class="demo">
+    <div class="legend" id="groupLegend" style="margin-bottom:10px"></div>
+    <div class="parts" id="parts"></div>
+    <p class="hint" id="depsOut" style="margin:10px 0 0">Tap a part to see its dependencies.</p>
+  </div>
+</section>
+
+</main>
+
+<footer class="pnav">
+  <span></span>
+  <a href="index.html">All visuals</a>
+  <a href="part1-data-representation.html">Part 1: Data Representation →</a>
+</footer>
+<script>
+(function () {
+  'use strict';
+
+  const $ = (id) => document.getElementById(id);
+  const h = (tag, props, ...kids) => {
+    const n = document.createElement(tag);
+    if (props) for (const k in props) {
+      if (k === 'class') n.className = props[k];
+      else if (k === 'style') n.style.cssText = props[k];
+      else if (k === 'html') n.innerHTML = props[k];
+      else if (k.startsWith('on')) n.addEventListener(k.slice(2), props[k]);
+      else n.setAttribute(k, props[k]);
+    }
+    for (const kid of kids.flat()) if (kid != null) n.append(kid);
+    return n;
+  };
+  const hex = (n, w) => n.toString(16).toUpperCase().padStart(w, '0');
+  const bin = (n, w) => n.toString(2).padStart(w, '0');
+  const store = {
+    get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
+    set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} },
+  };
+
+  /* theme */
+  const themeBtn = $('themeBtn');
+  function applyTheme(t) {
+    document.documentElement.setAttribute('data-theme', t);
+    themeBtn.innerHTML = t === 'dark' ? '&#9728;' : '&#9790;';
+    themeBtn.title = t === 'dark' ? 'Switch to light mode' : 'Switch to dark mode';
+  }
+  applyTheme(document.documentElement.getAttribute('data-theme'));
+  themeBtn.addEventListener('click', () => {
+    const t = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+    store.set('theme', t);
+    applyTheme(t);
+  });
+
+  /* section chips */
+  const chips = $('chips');
+  const sections = [...document.querySelectorAll('section.card')];
+  sections.forEach((s) => chips.append(h('a', { href: '#' + s.id }, s.dataset.title)));
+  const chipLinks = [...chips.children];
+  const io = new IntersectionObserver((entries) => {
+    entries.forEach((e) => {
+      if (!e.isIntersecting) return;
+      chipLinks.forEach((a) => a.classList.toggle('active', a.getAttribute('href') === '#' + e.target.id));
+      const act = chips.querySelector('.active');
+      if (act) act.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    });
+  }, { rootMargin: '-45% 0px -50% 0px' });
+  sections.forEach((s) => io.observe(s));
+
+/* ---------- 0: layers ---------- */
+  const INFO = {
+    user: { t: 'User space (Ring 3)', p: 'Your programs: bash, python, nginx. Each is a process (Part 4) made of threads (Part 5). Code here runs restricted: it cannot touch hardware or kernel memory directly.', r: 'Parts 4–5, 3.2', link: 'part4-processes.html' },
+    libc: { t: 'libc: the wrapper layer', p: 'Library functions that usually end in a system call: printf() buffers then calls write(), malloc() uses brk()/mmap(), fork() is really clone().', r: '3.3, 6.6, 7.6', link: 'part3-os.html' },
+    syscall: { t: '↓ System call', p: 'The only legal way for user space to ask the kernel for something. The syscall instruction switches the CPU to Ring 0 at an entry point the kernel chose. Same task, different privilege: a mode switch.', r: '3.3, 3.5', link: 'part3-os.html' },
+    signal: { t: '↑ Signal', p: 'The kernel tapping a process on the shoulder: Ctrl+C (SIGINT), a child exited (SIGCHLD), an invalid access (SIGSEGV). Delivered when the task returns to user mode.', r: 'Part 8', link: 'part8-signals.html' },
+    fault: { t: '↓ Page fault / exception', p: 'The current instruction couldn’t complete (page not mapped, divide by zero). The CPU jumps into the kernel, which fixes it and retries, or sends a signal.', r: '3.4, 6.5', link: 'part6-memory.html' },
+    kern: { t: 'Kernel (Ring 0)', p: 'One privileged program shared by everyone: scheduler, memory manager, VFS + filesystems, drivers, network stack, IPC. Every process is tracked by a task_struct.', r: 'Part 3, 0.2', link: 'part3-os.html' },
+    priv: { t: '↓ Privileged instructions, MMU', p: 'Only Ring 0 can load page tables (CR3), disable interrupts, or talk to device registers. The MMU translates every virtual address using the page tables the kernel set up.', r: '2.6, 6.3', link: 'part2-cpu.html' },
+    irq: { t: '↑ Interrupt', p: 'Hardware demanding attention: a timer tick (how the scheduler preempts), a packet arrived, a disk finished. The CPU stops what it’s doing and runs a kernel handler.', r: '3.4', link: 'part3-os.html' },
+    dma: { t: '↕ DMA', p: 'A device copies data straight into RAM by itself, then raises an interrupt when done. The CPU is free to run other tasks meanwhile.', r: '2.5', link: 'part2-cpu.html' },
+    hw: { t: 'Hardware', p: 'CPU cores (registers, caches, TLB, MMU), RAM divided into page frames, disks, network cards, timers. Underneath it all: bits and bytes.', r: 'Parts 1–2', link: 'part2-cpu.html' },
+  };
+  const layersEl = $('layers');
+  const els = {};
+  function mkLayer(key, cls, desc, minis) {
+    const b = h('button', { type: 'button', class: 'layer ' + cls },
+      h('div', { class: 't' }, INFO[key].t), h('div', { class: 'd' }, desc),
+      h('div', { class: 'chipsrow' }, minis.map((m) => h('span', { class: 'mini' }, m))));
+    b.addEventListener('click', () => select(key));
+    els[key] = b;
+    return b;
+  }
+  function mkArrow(key, label) {
+    const b = h('button', { type: 'button', class: 'arrow' }, label);
+    b.addEventListener('click', () => select(key));
+    els[key] = b;
+    return b;
+  }
+  layersEl.append(
+    mkLayer('user', 'user', 'processes and threads', ['bash', 'python', 'nginx', 'libc']),
+    h('div', { class: 'arrows' }, mkArrow('syscall', '↓ system call'), mkArrow('signal', '↑ signal'), mkArrow('fault', '↓ page fault / exception')),
+    mkLayer('kern', 'kern', 'task_structs + subsystems', ['scheduler', 'memory', 'VFS', 'drivers', 'net']),
+    h('div', { class: 'arrows' }, mkArrow('priv', '↓ privileged instr. / MMU'), mkArrow('irq', '↑ interrupt'), mkArrow('dma', '↕ DMA')),
+    mkLayer('hw', 'hw', 'CPU, RAM, devices', ['cores', 'caches', 'TLB', 'RAM frames', 'disk', 'NIC']));
+  function showInfo(target, key, extra) {
+    const d = INFO[key];
+    target.innerHTML = '';
+    target.append(h('h4', null, d.t), h('p', null, extra || d.p),
+      h('div', { class: 'refs' }, 'Notes: ' + d.r + ' · ', h('a', { href: d.link }, 'visual page →')));
+  }
+  function select(key, extra) {
+    Object.values(els).forEach((e) => e.classList.remove('sel'));
+    els[key].classList.add('sel');
+    showInfo($('info0'), key, extra);
+  }
+  select('user');
+
+  const TRACE = [
+    ['user', 'cat calls read(fd, buf, 4096). It is running in Ring 3.'],
+    ['syscall', 'libc executes the syscall instruction: the CPU switches to Ring 0 and jumps to the kernel entry point.'],
+    ['kern', 'The kernel finds the open file via current->files, goes through the VFS, and checks the page cache. Miss: it asks the disk driver for the data and puts the task to sleep (state D).'],
+    ['priv', 'The driver programs the device through its registers (only possible in Ring 0).'],
+    ['dma', 'The SSD copies the data straight into a page-cache page in RAM. The CPU runs other tasks meanwhile.'],
+    ['irq', 'The SSD raises an interrupt: done. The handler completes the I/O and wakes the sleeping task.'],
+    ['kern', 'The scheduler gives the task a CPU again. The kernel copies the data into the user buffer.'],
+    ['user', 'read() returns the byte count, back in Ring 3. One call crossed every layer (traced in full in Part 11).'],
+  ];
+  let traceTimer = null;
+  $('traceBtn').addEventListener('click', () => {
+    clearInterval(traceTimer);
+    let i = 0;
+    const step = () => {
+      if (i >= TRACE.length) { clearInterval(traceTimer); return; }
+      const [k, txt] = TRACE[i];
+      select(k, txt);
+      $('traceStep').textContent = `step ${i + 1} / ${TRACE.length}`;
+      i++;
+    };
+    step();
+    traceTimer = setInterval(step, 2200);
+  });
+  $('traceReset').addEventListener('click', () => { clearInterval(traceTimer); $('traceStep').textContent = ''; select('user'); });
+
+  /* ---------- 0.1: illusions ---------- */
+  const ill = $('ill');
+  const TASKC = ['var(--c-blue-soft)', 'var(--c-pink-soft)', 'var(--c-green-soft)', 'var(--c-amber-soft)'];
+  function cpuView(real) {
+    if (!real) return h('div', null, h('div', { class: 'timeline' }, h('div', { style: 'flex:1; background: var(--c-blue-soft)' }, 'my program, running continuously')),
+      h('ul', null, h('li', null, '"I have the CPU to myself."')));
+    const tl = h('div', { class: 'timeline' });
+    const seq = ['A', 'B', 'A', 'C', 'D', 'A', 'B', 'C', 'A', 'D', 'B', 'A'];
+    seq.forEach((t) => tl.append(h('div', { style: `flex:1; background:${TASKC['ABCD'.indexOf(t)]}; border-right:1px solid var(--border)` }, t)));
+    return h('div', null, tl, h('ul', null,
+      h('li', null, 'Many tasks share a few cores in time slices of a few ms.'),
+      h('li', null, 'A timer interrupt lets the scheduler switch tasks; registers are saved in task_struct (context switch).')));
+  }
+  function memView(real) {
+    const v = h('div', { class: 'vcol' }), p = h('div', { class: 'vcol' });
+    const map = real ? [5, 1, 7, 3] : [0, 1, 2, 3];
+    for (let i = 0; i < 4; i++) v.append(h('div', { style: `background:${TASKC[i]}` }, real ? `virt page ${i}` : `addr 0x${hex(i * 4096, 4)}`));
+    if (real) for (let f = 0; f < 8; f++) { const who = map.indexOf(f); p.append(h('div', { style: who >= 0 ? `background:${TASKC[who]}` : 'background: var(--surface-2); color: var(--muted)' }, who >= 0 ? `frame ${f}` : `frame ${f} (other)`)); }
+    const mid = h('div', { style: 'display:flex; align-items:center; justify-content:center; color: var(--muted)' }, real ? '→ page tables →' : '');
+    mid.style.fontSize = '10px'; mid.style.textAlign = 'center';
+    return h('div', null,
+      real ? h('div', { class: 'vmap' }, v, mid, p) : h('div', { class: 'vcol' }, [...v.children]),
+      h('ul', null, real
+        ? [h('li', null, 'Contiguous virtual pages map to scattered physical frames.'), h('li', null, 'Other processes use the other frames; the MMU and page tables keep them apart (Part 6).')]
+        : [h('li', null, '"I own one huge, contiguous address space starting near 0."')]));
+  }
+  function machineView(real) {
+    if (!real) return h('ul', null, h('li', null, '"My files: fd 0, 1, 2, 3…"'), h('li', null, '"My terminal, my user ID, my current directory."'), h('li', null, 'In a container: "I am PID 1, this is my root filesystem."'));
+    return h('ul', null,
+      h('li', null, 'fds are indexes into a per-process table pointing at shared kernel file objects (7.1–7.2).'),
+      h('li', null, 'User ID and capabilities are credentials in task_struct->cred (7.11, 10.4).'),
+      h('li', null, 'Signals, cwd, root: all fields of task_struct (Part 8, 4.2).'),
+      h('li', null, 'Containers: namespaces give a private view; cgroups limit usage (Part 10).'));
+  }
+  [['1. My own CPU', cpuView, '3.4–3.6', 'Part 3'], ['2. My own memory', memView, 'Part 6', 'Part 6'], ['3. My own machine', machineView, 'Parts 7–10', 'Parts 7–10']].forEach(([title, view, ref]) => {
+    const body = h('div');
+    const bBel = h('button', { type: 'button', class: 'on' }, 'Believes');
+    const bReal = h('button', { type: 'button' }, 'Reality');
+    const show = (real) => { bBel.classList.toggle('on', !real); bReal.classList.toggle('on', real); body.innerHTML = ''; body.append(view(real)); };
+    bBel.addEventListener('click', () => show(false));
+    bReal.addEventListener('click', () => show(true));
+    ill.append(h('div', { class: 'illcard' }, h('h4', null, title), h('div', { class: 'seg' }, bBel, bReal), body, h('div', { class: 'breaks' }, 'See ' + ref)));
+    show(false);
+  });
+
+  /* ---------- 0.2: task_struct hub ---------- */
+  const FIELDS = [
+    { f: 'pid, tgid', d: 'identity', chain: ['pid', 'thread ID', 'tgid = what getpid() returns'], p: 'Every thread has its own pid; all threads of a process share the tgid. PIDs are reused after a process is reaped.', r: '4.5, 5.1', link: 'part4-processes.html' },
+    { f: '__state', d: 'R / S / D / T / Z', chain: ['__state', 'R running', 'S / D sleeping', 'T stopped', 'Z zombie'], p: 'What the task is doing right now: what you see in the STAT column of ps.', r: '4.8', link: 'part4-processes.html' },
+    { f: 'thread (saved regs)', d: 'illusion 1', chain: ['thread', 'saved rsp, rip…', 'FPU / SIMD state'], p: 'On a context switch, the CPU registers of the outgoing task are saved here and the next task’s are restored.', r: '3.5, 2.3', link: 'part3-os.html' },
+    { f: 'se, prio, policy', d: 'scheduler', chain: ['se', 'vruntime', 'run queue (per CPU)'], p: 'The scheduler’s bookkeeping: the policy (SCHED_OTHER, SCHED_FIFO…), nice-based weight, and virtual runtime used to pick the next task.', r: '3.6, 4.6', link: 'part3-os.html' },
+    { f: 'parent, children', d: 'process tree', chain: ['parent', 'children list', 'orphans → PID 1 / subreaper'], p: 'The process tree. A dead child stays a zombie until the parent calls wait(); orphans are re-parented.', r: '4.5, 4.9', link: 'part4-processes.html' },
+    { f: 'mm', d: 'illusion 2', chain: ['mm', 'mm_struct', 'VMAs + pgd', 'page tables', 'RAM frames'], p: 'The address space. Threads of one process share the same mm_struct; kernel threads have none.', r: '6.4', link: 'part6-memory.html' },
+    { f: 'files', d: 'fd table', chain: ['files', 'files_struct', 'fd[3]', 'struct file (offset)', 'inode'], p: 'The fd table. fork() copies it, but the entries point to the same open file descriptions, so the offset is shared.', r: '7.1, 7.2', link: 'part7-files.html' },
+    { f: 'fs', d: 'cwd, root, umask', chain: ['fs', 'fs_struct', 'pwd (cwd)', 'root (chroot / pivot_root)'], p: 'Why cd must be a shell builtin: the current directory is per-process state.', r: '4.9, 10.3', link: 'part7-files.html' },
+    { f: 'cred', d: 'uid, gid, caps', chain: ['cred', 'uid / euid', 'gid / groups', 'capabilities'], p: 'Who this task is, for every permission check. setuid binaries change the effective UID; capabilities split root’s power.', r: '7.11, 10.4', link: 'part7-files.html' },
+    { f: 'signal, sighand', d: 'signals', chain: ['sighand', 'action[64] handlers', 'pending + blocked masks'], p: 'Handlers are shared by all threads; masks are per thread. Pending signals are delivered on the return to user mode.', r: '8.3–8.5', link: 'part8-signals.html' },
+    { f: 'nsproxy, cgroups', d: 'containers', chain: ['nsproxy', 'mnt, pid, net, uts, ipc… namespaces', 'cgroups (limits)'], p: 'What this task can see (namespaces) and how much it can use (cgroups). A container is just these fields set differently.', r: '10.1–10.3', link: 'part10-containers.html' },
+  ];
+  const hub = $('hub');
+  const fbtns = [];
+  FIELDS.forEach((x, i) => {
+    const b = h('button', { type: 'button', class: 'fieldbtn' }, h('span', { class: 'fn' }, x.f), h('span', { class: 'fd' }, x.d));
+    b.addEventListener('click', () => pick(i));
+    fbtns.push(b);
+    hub.append(b);
+  });
+  function pick(i) {
+    const x = FIELDS[i];
+    fbtns.forEach((b, j) => b.classList.toggle('sel', i === j));
+    const chain = h('div', { class: 'chain' });
+    x.chain.forEach((n, k) => { if (k) chain.append(h('span', { class: 'ar' }, '→')); chain.append(h('span', { class: 'node' }, n)); });
+    const box = $('info2');
+    box.innerHTML = '';
+    box.append(h('h4', null, 'task_struct->' + x.f.split(',')[0]), chain, h('p', null, x.p),
+      h('div', { class: 'refs' }, 'Notes: ' + x.r + ' · ', h('a', { href: x.link }, 'visual page →')));
+  }
+  pick(5);
+
+  /* ---------- 0.3: reading order ---------- */
+  const GROUPS = {
+    vocab: ['Hardware vocabulary', 'var(--c-amber)'], contract: ['The contract', 'var(--c-purple)'],
+    run: ['Running code', 'var(--c-blue)'], world: ['Talking to the world', 'var(--c-green)'],
+    box: ['Containers', 'var(--c-pink)'], wrap: ['Synthesis', 'var(--c-red)'],
+  };
+  const PARTS = [
+    [0, 'The Big Picture', 'how it all connects', 'wrap', [], 'part0-big-picture.html'],
+    [1, 'Data Representation', 'bits, bytes, caches', 'vocab', [], 'part1-data-representation.html'],
+    [2, 'CPU Fundamentals', 'pipelines, caches, rings', 'vocab', [1], 'part2-cpu.html'],
+    [3, 'OS Fundamentals', 'syscalls, interrupts, scheduler, boot', 'contract', [1, 2], 'part3-os.html'],
+    [4, 'Processes', 'fork, exec, wait', 'run', [2, 3], 'part4-processes.html'],
+    [5, 'Threads & Concurrency', 'races, locks, futex', 'run', [2, 3, 4], 'part5-threads.html'],
+    [6, 'Memory Management', 'virtual memory, page faults', 'run', [1, 2, 3, 4], 'part6-memory.html'],
+    [7, 'Files & I/O', 'fds, inodes, VFS, page cache', 'world', [3, 4, 6], 'part7-files.html'],
+    [8, 'Signals', 'delivery, handlers, masks', 'world', [3, 4, 5], 'part8-signals.html'],
+    [9, 'IPC', 'pipes, sockets, shared memory', 'world', [4, 6, 7, 8], 'part9-ipc.html'],
+    [10, 'Containers', 'namespaces, cgroups', 'box', [3, 4, 6, 7, 8, 9], 'part10-containers.html'],
+    [11, 'All Together', 'one command, every layer', 'wrap', [1, 2, 3, 4, 5, 6, 7, 8, 9], 'part11-all-together.html'],
+    [12, 'Q&A', 'quiz yourself', 'wrap', [], 'part12-quiz.html'],
+  ];
+  Object.values(GROUPS).forEach(([n, c]) => $('groupLegend').append(h('span', { style: `--sw:${c}` }, n)));
+  const tiles = PARTS.map(([n, t, d, g, deps, url]) => {
+    const a = h('a', { class: 'ptile', href: url, style: `--g:${GROUPS[g][1]}` }, h('div', { class: 'pn' }, 'Part ' + n), h('div', { class: 'pt' }, t), h('div', { class: 'pd' }, d));
+    const show = () => {
+      tiles.forEach((x, i) => { x.classList.toggle('dep', deps.includes(i)); x.classList.toggle('dim', i !== n && !deps.includes(i)); });
+      $('depsOut').textContent = deps.length ? `Part ${n} builds on: ${deps.map((i) => 'Part ' + i).join(', ')}.` : `Part ${n} has no prerequisites in these notes.`;
+    };
+    a.addEventListener('mouseenter', show);
+    a.addEventListener('focus', show);
+    $('parts').append(a);
+    return a;
+  });
+  $('parts').addEventListener('mouseleave', () => { tiles.forEach((x) => x.classList.remove('dim', 'dep')); });
+})();
+</script>
+</body>
+</html>

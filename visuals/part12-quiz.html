@@ -1,0 +1,536 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Questions and Answers, Visualized</title>
+<meta name="description" content="Flashcards for Part 12 of System Internals: every question from the notes, with short answers and section references.">
+<script>
+  (function () {
+    var saved = null;
+    try { saved = localStorage.getItem('theme'); } catch (e) {}
+    var dark = saved ? saved === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches;
+    document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+  })();
+</script>
+<style>
+  :root {
+    --bg: #ffffff; --surface: #f6f8fa; --surface-2: #eaeef2; --text: #1f2328; --muted: #59636e;
+    --border: #d0d7de; --accent: #0969da; --accent-soft: #ddf4ff;
+    --c-blue: #0969da; --c-pink: #bf3989; --c-green: #1a7f37; --c-amber: #9a6700; --c-purple: #8250df; --c-red: #cf222e;
+    --c-blue-soft: #ddf4ff; --c-pink-soft: #ffeff7; --c-green-soft: #dafbe1; --c-amber-soft: #fff8c5; --c-purple-soft: #fbefff; --c-red-soft: #ffebe9;
+    --hatch: repeating-linear-gradient(45deg, transparent 0 4px, rgba(130,80,223,.22) 4px 7px);
+    --radius: 8px;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  html[data-theme="dark"] {
+    --bg: #0d1117; --surface: #151b23; --surface-2: #212830; --text: #e6edf3; --muted: #9198a1;
+    --border: #3d444d; --accent: #4493f8; --accent-soft: rgba(56,139,253,.15);
+    --c-blue: #4493f8; --c-pink: #f778ba; --c-green: #3fb950; --c-amber: #d29922; --c-purple: #ab7df8; --c-red: #f85149;
+    --c-blue-soft: rgba(56,139,253,.18); --c-pink-soft: rgba(247,120,186,.16); --c-green-soft: rgba(63,185,80,.16);
+    --c-amber-soft: rgba(210,153,34,.18); --c-purple-soft: rgba(171,125,248,.18); --c-red-soft: rgba(248,81,73,.16);
+    --hatch: repeating-linear-gradient(45deg, transparent 0 4px, rgba(171,125,248,.30) 4px 7px);
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif; }
+  a { color: var(--accent); }
+  code, .mono { font-family: var(--mono); font-size: .92em; }
+  code { background: var(--surface-2); padding: .1em .35em; border-radius: 4px; }
+
+  header.top { max-width: 1040px; margin: 0 auto; padding: 32px 16px 8px; }
+  header.top h1 { margin: 0 0 6px; font-size: clamp(28px, 5vw, 40px); line-height: 1.15; }
+  header.top p { margin: 0 0 8px; color: var(--muted); max-width: 70ch; }
+  .backlink { font-size: 14px; }
+
+  nav.chips { position: sticky; top: 0; z-index: 10; background: var(--bg); border-bottom: 1px solid var(--border); }
+  nav.chips .inner { max-width: 1040px; margin: 0 auto; padding: 8px 16px; display: flex; gap: 6px; overflow-x: auto; scrollbar-width: thin; }
+  nav.chips a { flex: none; font-size: 13px; padding: 4px 10px; border: 1px solid var(--border); border-radius: 999px;
+                color: var(--text); text-decoration: none; background: var(--surface); white-space: nowrap; }
+  nav.chips a:hover, nav.chips a.active { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+
+  main { max-width: 1040px; margin: 0 auto; padding: 8px 16px 64px; }
+  section.card { border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin: 24px 0; background: var(--bg); scroll-margin-top: 56px; }
+  section.card > h2 { margin: 0 0 4px; font-size: 22px; }
+  section.card > h2 .num { color: var(--muted); font-weight: 500; margin-right: 6px; }
+  .lead { color: var(--muted); margin: 0 0 16px; max-width: 75ch; }
+  .demo { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; margin: 12px 0; overflow-x: auto; }
+  .demo h3 { margin: 0 0 10px; font-size: 15px; }
+  .row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+  .stack { display: flex; flex-direction: column; gap: 10px; }
+  .connect { font-size: 14px; color: var(--muted); border-left: 3px solid var(--accent); padding: 4px 0 4px 10px; margin-top: 14px; }
+  .hint { font-size: 13px; color: var(--muted); }
+  .big { font-family: var(--mono); font-size: 22px; font-weight: 600; }
+  .stat { display: inline-flex; flex-direction: column; padding: 6px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg); min-width: 90px; }
+  .stat .k { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  .stat .v { font-family: var(--mono); font-size: 18px; font-weight: 600; }
+  .ok { color: var(--c-green); } .bad { color: var(--c-red); } .warn { color: var(--c-amber); }
+
+  button, select, input[type="text"], input[type="number"] {
+    font: inherit; font-size: 14px; color: var(--text); background: var(--bg);
+    border: 1px solid var(--border); border-radius: 6px; padding: 5px 10px;
+  }
+  button { cursor: pointer; }
+  button:hover { background: var(--surface-2); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover { filter: brightness(1.08); background: var(--accent); }
+  button:focus-visible, select:focus-visible, input:focus-visible, .bit:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  input[type="range"] { accent-color: var(--accent); width: min(360px, 100%); }
+  label.inline { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; }
+
+  /* bits */
+  .bits { display: inline-flex; gap: 4px; flex-wrap: nowrap; }
+  .bitcol { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+  .bit { width: 34px; height: 40px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg);
+         font: 600 18px var(--mono); color: var(--muted); cursor: pointer; padding: 0; transition: background .12s, color .12s; }
+  .bit.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .bit.sm { width: 22px; height: 30px; font-size: 14px; }
+  .bitcol .w { font: 11px var(--mono); color: var(--muted); }
+  .nibble { display: inline-flex; flex-direction: column; align-items: center; gap: 6px; padding: 6px; border: 1px dashed var(--border); border-radius: 8px; }
+  .nibble .hx { font: 700 22px var(--mono); color: var(--c-pink); }
+  .gap { width: 10px; }
+
+  /* byte cells */
+  .cells { display: grid; gap: 2px; }
+  .cell { height: 30px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg);
+          font: 11px var(--mono); color: var(--muted); display: flex; align-items: center; justify-content: center; position: relative; }
+  .cell.hl { background: var(--c-blue-soft); border-color: var(--c-blue); color: var(--text); font-weight: 600; }
+  .cell.hl2 { background: var(--c-pink-soft); border-color: var(--c-pink); color: var(--text); }
+  .cell.pad { background: var(--hatch), var(--bg); border-style: dashed; }
+  .cell.line { background: var(--c-amber-soft); }
+  .cell.boxstart { margin-left: 6px; }
+  .cell.lineb { box-shadow: -4px 0 0 0 var(--c-red); margin-left: 8px; }
+
+  table.mem { border-collapse: collapse; font-family: var(--mono); font-size: 14px; }
+  table.mem th, table.mem td { border: 1px solid var(--border); padding: 4px 10px; text-align: center; }
+  table.mem th { background: var(--surface-2); font-weight: 600; font-family: inherit; font-size: 13px; }
+
+  .tiles { display: grid; gap: 1px; }
+  .tile { width: 9px; height: 9px; background: var(--surface-2); border-radius: 1px; }
+  .tile.mark { background: var(--c-pink); }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 13px; color: var(--muted); }
+  .legend span::before { content: ""; display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 5px; vertical-align: -2px; background: var(--sw); border: 1px solid var(--border); }
+
+  /* address space */
+  .addrspace { display: grid; grid-template-columns: 120px 1fr; gap: 0; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; font-size: 13px; max-width: 560px; }
+  .addrspace > div { padding: 8px 10px; border-bottom: 1px solid var(--border); }
+  .addrspace .lbl { font-family: var(--mono); font-size: 11px; color: var(--muted); background: var(--surface-2); }
+  .addrspace .zone.kern { background: var(--c-purple-soft); }
+  .addrspace .zone.hole { background: var(--hatch), var(--bg); color: var(--muted); }
+  .addrspace .zone.user { background: var(--c-green-soft); }
+  .addrspace .zone.here { outline: 3px solid var(--accent); outline-offset: -3px; font-weight: 600; }
+  .bar { height: 26px; border-radius: 6px; display: flex; overflow: hidden; border: 1px solid var(--border); font-size: 12px; }
+  .bar > div { display: flex; align-items: center; justify-content: center; color: var(--text); white-space: nowrap; overflow: hidden; }
+  .logbar { display: grid; grid-template-columns: 110px 1fr 90px; gap: 6px 10px; align-items: center; font-size: 13px; }
+  .logbar .fill { height: 14px; border-radius: 4px; background: var(--accent); }
+
+  /* struct */
+  .fields { display: flex; flex-direction: column; gap: 6px; }
+  .field { display: flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 14px; }
+  .field .sw { width: 14px; height: 14px; border-radius: 3px; }
+  .field button { padding: 2px 8px; font-size: 13px; }
+  .structgrid { display: grid; grid-template-columns: 56px repeat(8, minmax(38px, 1fr)); gap: 3px; align-items: center; max-width: 520px; }
+  .structgrid .off { font: 11px var(--mono); color: var(--muted); text-align: right; padding-right: 6px; }
+  .structgrid .cell { height: 34px; font-size: 12px; color: var(--text); }
+
+  /* matrix sim */
+  .matrix { display: grid; grid-template-columns: repeat(8, 30px); gap: 3px; }
+  .matrix .cell { height: 30px; transition: background .1s; }
+  .matrix .cell.cached { background: var(--c-blue-soft); }
+  .matrix .cell.hit { background: var(--c-green); color: #fff; border-color: var(--c-green); }
+  .matrix .cell.miss { background: var(--c-red); color: #fff; border-color: var(--c-red); }
+  .matrix .cell.gb { margin-left: 5px; }
+
+  .cores { display: grid; grid-template-columns: repeat(2, minmax(160px, 1fr)); gap: 12px; max-width: 560px; }
+  .core { border: 1px solid var(--border); border-radius: 8px; padding: 10px; background: var(--bg); transition: box-shadow .15s; }
+  .core.flash { box-shadow: 0 0 0 3px var(--c-red); }
+  .core h4 { margin: 0 0 6px; font-size: 14px; }
+  .state { font: 600 13px var(--mono); padding: 2px 6px; border-radius: 4px; }
+  .state.M { background: var(--c-green-soft); color: var(--c-green); }
+  .state.I { background: var(--c-red-soft); color: var(--c-red); }
+  .state.S { background: var(--c-blue-soft); color: var(--c-blue); }
+  .state.none { background: var(--surface-2); color: var(--muted); }
+
+  /* float */
+  .fbits { display: flex; flex-wrap: wrap; gap: 2px; }
+  .fbits .bit { width: 20px; height: 30px; font-size: 13px; }
+  .fbits .bit.s { --tone: var(--c-red); } .fbits .bit.e { --tone: var(--c-blue); } .fbits .bit.f { --tone: var(--c-green); }
+  .fbits .bit { border-color: var(--tone); color: var(--tone); }
+  .fbits .bit.on { background: var(--tone); color: #fff; }
+  .fbits .sep { width: 8px; }
+  .exact { font-family: var(--mono); font-size: 13px; word-break: break-all; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; }
+
+  /* utf8 */
+  .cps { display: flex; flex-wrap: wrap; gap: 10px; }
+  .cp { border: 1px solid var(--border); border-radius: 8px; background: var(--bg); padding: 10px; min-width: 150px; }
+  .cp .ch { font-size: 30px; line-height: 1.1; }
+  .cp .u { font: 600 13px var(--mono); color: var(--c-purple); }
+  .cp .bytes { font: 13px var(--mono); margin-top: 6px; }
+  .cp .pre { color: var(--muted); }
+  .cp .pay { color: var(--c-green); font-weight: 600; }
+  .cp .hexb { color: var(--c-pink); }
+
+  svg text { font-family: var(--mono); }
+  .theme-btn { position: fixed; top: 10px; right: 12px; z-index: 20; width: 34px; height: 34px; padding: 0; font-size: 16px; }
+  @media (max-width: 600px) {
+    section.card { padding: 14px; }
+    .bit { width: 30px; height: 36px; font-size: 16px; }
+    .structgrid { grid-template-columns: 44px repeat(8, minmax(28px, 1fr)); }
+  }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+<style>
+  footer.pnav { max-width: 1040px; margin: 0 auto; padding: 0 16px 48px; display: flex; flex-wrap: wrap; gap: 10px; justify-content: space-between; font-size: 14px; }
+  footer.pnav a { padding: 6px 12px; border: 1px solid var(--border); border-radius: 999px; text-decoration: none; background: var(--surface); }
+  footer.pnav a:hover { border-color: var(--accent); background: var(--accent-soft); }
+
+  .toolbar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .filters { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+  .filters button { border-radius: 999px; font-size: 13px; }
+  .filters button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .progress { height: 10px; border-radius: 999px; background: var(--surface-2); overflow: hidden; border: 1px solid var(--border); }
+  .progress > div { height: 100%; background: var(--c-green); width: 0; transition: width .25s; }
+  .deck { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 12px; }
+  .fc { perspective: 1200px; }
+  .fc-inner { display: grid; transition: transform .45s; transform-style: preserve-3d; }
+  .fc.flipped .fc-inner { transform: rotateY(180deg); }
+  .face { grid-area: 1 / 1; backface-visibility: hidden; -webkit-backface-visibility: hidden; border: 1px solid var(--border);
+          border-radius: 10px; padding: 14px; background: var(--bg); display: flex; flex-direction: column; gap: 10px; min-height: 190px; }
+  .face.back { transform: rotateY(180deg); background: var(--surface); }
+  .fc.known .face { border-color: var(--c-green); box-shadow: inset 4px 0 0 var(--c-green); }
+  .tag { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  .q { font-weight: 600; font-size: 15px; flex: 1; }
+  .a { font-size: 14px; flex: 1; }
+  .a p { margin: 0 0 6px; }
+  .refs { font-size: 12px; color: var(--muted); }
+  .cardbtns { display: flex; gap: 6px; flex-wrap: wrap; }
+  .cardbtns button { font-size: 13px; padding: 4px 10px; }
+  .cardbtns button.knownbtn.on { background: var(--c-green); border-color: var(--c-green); color: #fff; }
+  .showall .fc-inner { transform: none !important; }
+  .showall .face.back { transform: none; position: static; grid-area: auto; }
+  .showall .fc-inner { display: flex; flex-direction: column; gap: 6px; }
+  .showall .face { min-height: 0; backface-visibility: visible; }
+  .empty { color: var(--muted); font-style: italic; }
+  .showall .front .primary, .showall .back .cardbtns button:first-child { display: none; }
+  @media (prefers-reduced-motion: reduce) { .fc-inner { transition: none; } }
+</style>
+</head>
+<body>
+<button class="theme-btn" id="themeBtn" type="button" aria-label="Toggle dark mode"></button>
+<header class="top">
+  <a class="backlink" href="../#12-questions-and-answers">← Back to the notes: Part 12</a>
+  <h1>Questions and Answers, Visualized</h1>
+  <p>Every question from Part 12 as a flashcard. Try to answer out loud, flip the card, and mark the ones you know. Your progress is saved in this browser.</p>
+</header>
+
+<nav class="chips" aria-label="Sections"><div class="inner" id="chips"></div></nav>
+
+<main>
+  <div class="demo">
+    <div class="toolbar">
+      <button type="button" id="shuffleBtn">🔀 Shuffle</button>
+      <button type="button" id="orderBtn">↺ Original order</button>
+      <label class="inline"><input type="checkbox" id="hideKnown"> hide known</label>
+      <label class="inline"><input type="checkbox" id="showAll"> show all answers</label>
+      <button type="button" id="resetBtn">Reset progress</button>
+      <span class="mono" id="progText" style="margin-left:auto"></span>
+    </div>
+    <div class="progress" style="margin-top:10px"><div id="progBar"></div></div>
+    <div class="filters" id="filters"></div>
+  </div>
+  <div id="decks"></div>
+</main>
+
+<footer class="pnav">
+  <a href="part11-all-together.html">← Part 11: All Together</a>
+  <a href="index.html">All visuals</a>
+  <a href="part0-big-picture.html">Part 0: The Big Picture →</a>
+</footer>
+<script>
+(function () {
+  'use strict';
+
+  const $ = (id) => document.getElementById(id);
+  const h = (tag, props, ...kids) => {
+    const n = document.createElement(tag);
+    if (props) for (const k in props) {
+      if (k === 'class') n.className = props[k];
+      else if (k === 'style') n.style.cssText = props[k];
+      else if (k === 'html') n.innerHTML = props[k];
+      else if (k.startsWith('on')) n.addEventListener(k.slice(2), props[k]);
+      else n.setAttribute(k, props[k]);
+    }
+    for (const kid of kids.flat()) if (kid != null) n.append(kid);
+    return n;
+  };
+  const hex = (n, w) => n.toString(16).toUpperCase().padStart(w, '0');
+  const bin = (n, w) => n.toString(2).padStart(w, '0');
+  const store = {
+    get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
+    set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} },
+  };
+
+  /* theme */
+  const themeBtn = $('themeBtn');
+  function applyTheme(t) {
+    document.documentElement.setAttribute('data-theme', t);
+    themeBtn.innerHTML = t === 'dark' ? '&#9728;' : '&#9790;';
+    themeBtn.title = t === 'dark' ? 'Switch to light mode' : 'Switch to dark mode';
+  }
+  applyTheme(document.documentElement.getAttribute('data-theme'));
+  themeBtn.addEventListener('click', () => {
+    const t = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+    store.set('theme', t);
+    applyTheme(t);
+  });
+
+  /* section chips */
+  const chips = $('chips');
+  const sections = [...document.querySelectorAll('section.card')];
+  sections.forEach((s) => chips.append(h('a', { href: '#' + s.id }, s.dataset.title)));
+  const chipLinks = [...chips.children];
+  const io = new IntersectionObserver((entries) => {
+    entries.forEach((e) => {
+      if (!e.isIntersecting) return;
+      chipLinks.forEach((a) => a.classList.toggle('active', a.getAttribute('href') === '#' + e.target.id));
+      const act = chips.querySelector('.active');
+      if (act) act.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    });
+  }, { rootMargin: '-45% 0px -50% 0px' });
+  sections.forEach((s) => io.observe(s));
+
+const CATS = [
+    ['files', 'Files, Links and Filesystems'],
+    ['shell', 'Shell and Processes'],
+    ['signals', 'Signals'],
+    ['memory', 'Memory'],
+    ['kernel', 'Kernel, CPU and Scheduling'],
+    ['numbers', 'Numbers, Time and Storage'],
+  ];
+  // [category, question, answer, refs]
+  const Q = [
+    ['files', "Let's assume we have two different filesystems. Can a symlink point to a file on the other filesystem?",
+      'Yes. A symlink is a tiny file whose content is just a path string, resolved by the normal path walk every time you access it, and the path walk crosses mount points freely. It can dangle if the other filesystem is unmounted. Inside a container or chroot an absolute target is resolved against the container’s root, so use a bind mount there.', '7.3, 7.13, 10.3'],
+    ['files', 'Can a hard link point to another filesystem?',
+      'No: `ln` fails with `EXDEV` ("Invalid cross-device link"). A hard link is a directory entry storing only an inode number, and inode numbers are unique only within one filesystem.', '7.3'],
+    ['files', 'Can two files have the same inode number?',
+      'Yes, if they are on different filesystems. The real identity of a file is (device, inode). Within one filesystem the same inode number means the same file (hard links). Root directories of ext4 filesystems are usually inode 2.', '7.3, 7.13'],
+    ['files', "Why can't I create a hard link to a directory?",
+      'It would allow cycles and give a directory several parents, making `..` ambiguous and sending `find`, `du` and `rm -r` into loops, so the kernel refuses with `EPERM`. The only directory hard links are the automatic `.` and `..`, which is why an ext4 directory has 2 + (number of subdirectories) links.', '7.3'],
+    ['files', 'What does `mv` do to the inode? Same filesystem vs different filesystem?',
+      'Same filesystem: `rename()` only changes directory entries, so the inode stays the same, it is instant and atomic. Across filesystems `rename()` fails with `EXDEV`, so `mv` copies into a new inode and unlinks the original: slow and not atomic.', '7.13'],
+    ['files', 'What happens when you remove a file that a process still has open?',
+      '`rm` calls `unlink()`, which only removes the name and decrements the link count. The inode and data are freed only when the link count is 0 and no open file references it. The process keeps using it, the space isn’t freed, and you can recover it via `/proc/<pid>/fd/<n>`.', '7.2, 7.3'],
+    ['files', '`df -h` says the disk is full, but `du -sh /` shows much less. What are all the possible causes, and how would you investigate?',
+      '`df` asks the filesystem how many blocks are allocated; `du` sums files it can reach by name. Causes: deleted-but-open files (`lsof +L1`), data hidden under a mount point, ext4’s 5% reserved blocks, directories `du` can’t read, snapshots and metadata. The inverse ("No space left" with free space) usually means you’re out of inodes (`df -i`).', '7.3, 7.13'],
+    ['files', 'What does `rm` do to a symlink? And `chmod`?',
+      '`rm link` removes the symlink itself; the target is untouched. `chmod` on a symlink changes the target, because symlink permissions are meaningless on Linux (always `lrwxrwxrwx`). `chown -h` changes the link’s own owner.', '7.3'],
+    ['files', 'What happens with a symlink loop (`a → b`, `b → a`)?',
+      'Path resolution gives up after 40 symlinks in one lookup and fails with `ELOOP` ("Too many levels of symbolic links").', '7.3'],
+    ['files', 'How does `mount --bind` work? How is it different from a symlink?',
+      'A bind mount is a kernel mount-table entry: the same directory (same dentries and inodes) appears at a second place. It behaves exactly like the original and works inside chroots and containers. A symlink is a file containing a path, re-resolved at each access, and can break where paths resolve differently.', '7.13'],
+    ['files', 'Why do files in `/proc` show a size of 0?',
+      'Their content doesn’t exist until you read it: the kernel generates the text on the fly from structures like `task_struct`. There is no stored data, so no size to report.', '7.10, 4.2'],
+    ['files', 'Why can `ls -l` show a file as 10 GB while `du` says 4 KB?',
+      'It’s a sparse file. `ls -l` shows the inode’s size (highest offset written); `du` shows allocated blocks. Holes have no blocks and read back as zeros.', '7.3'],
+    ['files', 'Can you explain what a device file in `/dev` is, and how it differs from a regular file?',
+      'A device file has no data blocks: its inode stores a type (`b`/`c`) and a major:minor number. Opening it routes every `read`/`write`/`ioctl` to the driver registered for that major number instead of a filesystem.', '7.12, 7.4'],
+    ['files', '`/lib` contains shared libraries like `libc`. How do these relate to the executables in `/bin`? How does a program use `libc` at runtime?',
+      'Binaries are dynamically linked: they reference `printf` instead of containing it. At `execve` the kernel starts the dynamic linker named in `PT_INTERP`, which `mmap`s the needed libraries, resolves symbols (PLT/GOT) and jumps to the program. Library code pages are shared via the page cache.', '4.9, 4.10, 6.6'],
+    ['files', 'Why does `sudo echo hello > /root/file` fail with "Permission denied"?',
+      'The redirection is done by your own (non-root) shell before `sudo` runs, so the `open()` fails. Use `echo hello | sudo tee /root/file` or `sudo sh -c …`.', '7.5'],
+
+    ['shell', 'What happens when you run `echo *` in an empty directory?',
+      'The shell expands globs before running anything. With no matches, bash passes the literal `*`, so `echo` prints `*` (unless `nullglob` or `failglob` is set).', '4.9'],
+    ['shell', 'How does the shell parse and execute `ls *.txt | grep foo`? What syscalls are involved?',
+      'The shell expands `*.txt` (openat + getdents64), calls `pipe()`, forks two children, uses `dup2` to connect `ls`’s stdout and `grep`’s stdin to the pipe, closes unused ends, and each child calls `execve`. The parent closes its pipe fds and reaps both with `wait4`.', '9.1, 4.9, 7.5'],
+    ['shell', "What's the difference between `exec()` and `fork()`? Why does a shell use both to launch a program?",
+      '`fork()` creates a new process by duplicating the caller; `exec()` replaces the program in the current process (same PID). The shell must stay alive, so it forks, and the child execs the program. The gap between the two is where redirections and pipes are set up.', '4.9'],
+    ['shell', 'Why is `cd` a shell builtin, and not a program like `ls`?',
+      'The current directory is per-process state (`task_struct->fs`). An external `cd` would change the child’s directory and exit. Builtins exist for anything that must modify the shell itself (`cd`, `export`, `ulimit`, `source`).', '4.2, 4.9'],
+    ['shell', 'What is PID 0?',
+      'The idle task (historically "swapper"): created statically at boot, kernel-only, one per CPU, run when nothing else is runnable. It created PID 1 (init) and PID 2 (kthreadd). It is not shown by `ps`.', '4.5, 2.1'],
+    ['shell', "Why does Linux start multiple virtual TTYs (`/dev/tty1`–`tty6`) by default? Isn't one enough?",
+      'Several independent login sessions on one screen and keyboard: one user on tty1, another on tty2, and an admin can switch to tty3 to fix a stuck system even if the GUI is frozen.', '3.7'],
+    ['shell', 'Do all processes have a `task_struct`, or is it like one main class that processes are created from?',
+      'Every process and every thread has its own `task_struct` instance, allocated when the task is created and freed when it is reaped. The kernel links them in a task list and a PID hash; `current` is the one running on this CPU.', '4.2'],
+    ['shell', 'Explain zombie and orphan processes. How are they created, and how do you clean up zombies?',
+      'A zombie has exited but its parent hasn’t called `wait()`; only its `task_struct` remains. An orphan is still running but its parent died; it’s adopted by a subreaper or PID 1. You can’t kill a zombie: make the parent `wait()`, or kill the parent so PID 1 reaps it.', '4.5, 4.9'],
+    ['shell', 'Can `kill -9` kill a process stuck in `D` state?',
+      'Not immediately. `SIGKILL` stays pending, because signals are acted on when the task returns toward user mode and a `D` sleep isn’t woken by signals. It dies when the I/O completes (`TASK_KILLABLE` sleeps are the exception).', '4.8, 8.1'],
+    ['shell', 'After `fork()`, the parent and the child both write to the same fd. Do they overwrite each other?',
+      'No: both fd entries point to the same open file description, which holds the offset, so their writes follow each other. Two separate `open()` calls would have independent offsets and could overwrite.', '7.2'],
+    ['shell', 'If a multithreaded process calls `fork()`, how many threads does the child have?',
+      'One: a copy of the calling thread. Mutexes held by other threads are copied in their locked state with no owner, so the child should only call async-signal-safe functions until `execve`.', '4.9, 5.1'],
+    ['shell', "A script does `export FOO=bar`. Why doesn't my shell see `FOO` afterwards?",
+      'The environment is copied from parent to child at fork/exec. The script ran in a child process with its own memory; changes never flow back to the parent. Use `source script.sh`.', '4.9, 6.3'],
+    ['shell', 'What does exit code 137 mean? And 139, 143, 127?',
+      'The shell reports 128 + N for death by signal N: 137 = SIGKILL (often the OOM killer or a cgroup memory limit), 139 = SIGSEGV, 143 = SIGTERM. 127 = command not found, 126 = not executable.', '4.9, 6.8'],
+    ['shell', 'How does a background job survive when I log out?',
+      'On hangup the session leader gets `SIGHUP` and forwards it to jobs. Survive with `nohup` (ignores SIGHUP before exec), `setsid` (new session, no controlling terminal), `disown`, tmux/screen, or a systemd service.', '4.5, 8.3'],
+
+    ['signals', 'How does a process handle `SIGTERM`? How can you prevent a process from being killed with `Ctrl+C`?',
+      'SIGTERM is delivered on the next return to user mode; an installed handler runs (typically set a flag and exit cleanly), otherwise the default action terminates. Ctrl+C sends SIGINT: ignore it with `SIG_IGN`, catch it with a handler, or block it. SIGKILL and SIGSTOP can never be caught, blocked or ignored.', '8.1–8.4'],
+    ['signals', 'What happens when you run `kill -9` on a process? Can it be intercepted or handled?',
+      'SIGKILL terminates unconditionally and bypasses user space: no handler, no flushing of stdio buffers, no cleanup. The kernel still frees memory and fds, and the parent must reap it (status 137). Only D-state sleeps and PID 1 (from inside its namespace) delay or ignore it.', '8.2, 8.3'],
+    ['signals', 'Why does `docker stop` take 10 seconds for some containers?',
+      'The app is PID 1 in its PID namespace, and the kernel drops signals to PID 1 that it has no handler for. SIGTERM is ignored, so after 10 s Docker sends SIGKILL. Fix: handle SIGTERM, `exec` in entrypoint scripts, or use `--init` (tini).', '10.1, 3.7'],
+    ['signals', 'Why does `yes | head -n 1` terminate, even though `yes` loops forever?',
+      '`head` exits and closes the only read end of the pipe. The next `write()` by `yes` triggers SIGPIPE, whose default action terminates it (exit status 141 = 128 + 13).', '9.1, 8.2'],
+    ['signals', 'In a multithreaded program, which thread receives a signal?',
+      'Process-directed signals go to any thread not blocking them; synchronous ones (SIGSEGV, SIGFPE) go to the thread that caused them; `pthread_kill`/`tgkill` target one thread. Handlers are shared, masks are per thread.', '8.5'],
+
+    ['memory', 'Two different processes print the same pointer value (e.g. `0x55d0c1a02000`). Do they share that memory?',
+      'No. Each process has its own page tables (its own CR3), so the same virtual address maps to different physical frames. They share only when the kernel deliberately maps the same frames (shared libraries, shared memory).', '6.3, 9.3'],
+    ['memory', "Why doesn't `fork()` of a process using 10 GB take 10 GB of extra RAM or seconds of copying?",
+      'Copy-on-write: fork copies page tables and marks pages read-only; data pages are copied only when someone writes. Copying the page tables (~20 MB for 10 GB) is the real cost, which is why `vfork`/`posix_spawn` exist.', '4.9, 6.5'],
+    ['memory', 'How can a program allocate 100 GB on a 16 GB machine?',
+      'Overcommit + demand paging: malloc only creates a VMA, and frames are allocated on first touch. With the default heuristic (mode 0) a single 100 GB request is refused (larger than RAM + swap), but ten 10 GB requests all succeed; mode 1 allows even the single request, mode 2 enforces a strict commit limit. If you actually touch more than RAM + swap, the OOM killer sends SIGKILL (exit 137).', '6.5, 6.8'],
+    ['memory', "What's the difference between a page fault and a segmentation fault?",
+      'A page fault is a normal CPU exception when translation fails; the kernel usually fixes it (demand paging, COW, swap-in) and retries. A segfault is when the kernel finds the access illegal (no VMA, or forbidden permissions) and sends SIGSEGV.', '6.5, 3.4'],
+    ['memory', "Why do user-space addresses look like `0x7ffc...` or `0x55...`, and kernel addresses like `0xffff...`?",
+      'x86-64 uses 48-bit canonical addresses: user space is the lower half, the kernel the upper half. Within user space the stack sits near the top (`0x7ffc…`), libraries below (`0x7f…`), PIE executables and heap around `0x55…`, all randomized by ASLR.', '1.4, 4.4'],
+    ['memory', '`free` shows almost no free memory. Is the system running out of memory?',
+      'Probably not: idle RAM is used as page cache ("buff/cache") and dropped instantly when needed. Look at "available". Real pressure shows as swap activity, rising major faults, kswapd CPU, PSI memory pressure and OOM kills.', '6.7, 6.8'],
+    ['memory', 'Does every memory access go through the page tables?',
+      'Logically yes, physically almost never: the TLB caches translations and a hit costs about a cycle. Only a TLB miss walks the 4-level table, and only a failed walk involves the kernel.', '2.4, 6.3'],
+    ['memory', 'Can a user process read kernel memory?',
+      'Architecturally no: kernel pages are supervisor-only (U/S bit), so Ring 3 access faults. Meltdown showed vulnerable CPUs leaked it speculatively; KPTI removes kernel mappings from user-mode page tables.', '2.2, 3.3, 6.3'],
+    ['memory', 'What happens on a stack overflow (e.g. infinite recursion)?',
+      'Frames grow down until a push touches the guard gap below the stack VMA; the fault finds no valid mapping and the kernel sends SIGSEGV. A handler can only run on an alternate signal stack (`sigaltstack`).', '6.5, 2.7'],
+
+    ['kernel', 'Is every system call a context switch?',
+      'No. A syscall is a mode switch (same task, Ring 3 → 0 → 3). A context switch happens only if the kernel runs a different task, e.g. because the call must wait. vDSO calls avoid even the mode switch.', '3.5, 3.3'],
+    ['kernel', 'How does the kernel schedule processes? What happens if all processes are I/O-bound?',
+      'EEVDF (CFS before 6.6) tracks weighted virtual runtime and picks the eligible task with the earliest virtual deadline; real-time policies come first; each CPU has its own run queue. I/O-bound tasks mostly sleep, the CPU idles, and a woken task gets the CPU quickly because its vruntime is low.', '3.6'],
+    ['kernel', "What's the difference between `strace`, `ltrace`, and `ptrace`?",
+      '`ptrace` is the system call the tools are built on. `strace` traces system calls and signals; `ltrace` traces library calls via PLT breakpoints. Tracing your own processes needs no root (subject to Yama `ptrace_scope`); others need `CAP_SYS_PTRACE`.', '3.3, 4.10'],
+    ['kernel', "Why is `read()`-ing a file one byte at a time so slow?",
+      'Each `read()` is a system call costing ~100–300 ns, so 1 MB means a million crossings. stdio buffers 4 KB at a time in user space, and fast APIs (`mmap`, `io_uring`) exist to cross the boundary less often.', '3.3, 7.6'],
+    ['kernel', 'The load average is 20 on an 8-core machine, but `top` shows the CPUs mostly idle. What’s happening?',
+      'Linux load average counts R and D tasks. Idle CPUs + high load = many tasks stuck in D, waiting on disk or a network filesystem. Check `ps` for D states, `iostat -x`, `vmstat`, `/proc/pressure/io`.', '3.6, 4.8'],
+    ['kernel', 'Why does a `printf` before `fork()` sometimes print twice?',
+      'printf writes into the stdio buffer in process memory. If it isn’t flushed (no newline, or stdout is a pipe/file), fork copies it and both processes flush it. Call `fflush(stdout)` before forking, or `_exit()` in the child.', '7.6, 4.9'],
+    ['kernel', "What's the real difference between a container and a virtual machine?",
+      'A VM runs its own kernel on virtualized hardware (VMX, EPT). A container is a group of host processes with namespaces, cgroups and capabilities/seccomp, sharing the host kernel: fast and light, but a kernel bug is shared.', '2.6, 10.1–10.4'],
+    ['kernel', 'Can a process in one container see or signal processes in another container?',
+      'Not normally: each container has its own PID namespace, so the others don’t exist in its view. The host sees all of them; containers explicitly sharing a PID namespace can see each other.', '10.1'],
+    ['kernel', 'When one thread calls `close(fd)`, is the file closed for the other threads too?',
+      'Yes: threads share the fd table, so close removes it for everyone, and the number can be reused immediately by another open(), making a third thread read or write the wrong file.', '5.1, 7.1'],
+
+    ['numbers', 'Why is `0.1 + 0.2` not equal to `0.3`?',
+      '0.1, 0.2 and 0.3 have no exact binary representation; each double is the nearest value, and the errors don’t cancel: 0.30000000000000004. Compare with a tolerance; use integers or decimals for money.', '1.10'],
+    ['numbers', 'Why does `exit(-1)` give exit status 255, and `exit(256)` give 0?',
+      'Only the low 8 bits reach the parent. −1 in two’s complement is all ones (0xFF = 255); 256 is 0x100, whose low byte is 0, meaning success.', '1.9, 4.9'],
+    ['numbers', 'Why should you measure elapsed time with `CLOCK_MONOTONIC` instead of `time()` or `gettimeofday()`?',
+      'Those return wall-clock time, which can jump when NTP steps the clock, an admin sets it, or a VM resumes. `CLOCK_MONOTONIC` never goes backward.', '3.8'],
+    ['numbers', 'What is the Year 2038 problem?',
+      'A signed 32-bit `time_t` overflows at 2038-01-19 03:14:07 UTC and wraps to 1901. 64-bit Linux is safe; 32-bit systems need 64-bit time support, and file formats and databases storing 32-bit time need fixing.', '1.9, 3.8'],
+    ['numbers', 'How do you update a file so that a crash never leaves it half-written?',
+      'Write a temp file in the same directory, `fsync` it, `rename` it over the original (atomic within one filesystem), then `fsync` the directory.', '7.15, 6.7, 7.13'],
+    ['numbers', 'After a power failure, why can a file that was written successfully be empty or missing?',
+      '`write()` success only means the data reached the page cache; it’s written to disk later, and the drive may cache it further. The journal keeps the filesystem consistent but doesn’t guarantee recent data. Only `fsync` does.', '6.7, 7.15'],
+    ['numbers', 'A program built on my laptop fails on a server with "GLIBC_2.34 not found". Why?',
+      'glibc versions its symbols; the binary recorded a newer version than the server’s glibc provides, so the dynamic linker refuses to start it. Build on the oldest target distro or link statically.', '4.10'],
+  ];
+
+  const esc = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  const fmt = (s) => esc(s).replace(/`([^`]+)`/g, '<code>$1</code>');
+  const hash = (s) => { let x = 5381; for (let i = 0; i < s.length; i++) x = ((x << 5) + x + s.charCodeAt(i)) | 0; return 'q' + (x >>> 0).toString(36); };
+
+  let known = new Set();
+  try { known = new Set(JSON.parse(store.get('quiz-known') || '[]')); } catch (e) { known = new Set(); }
+  const saveKnown = () => store.set('quiz-known', JSON.stringify([...known]));
+
+  let order = Q.map((_, i) => i);
+  let activeCat = 'all';
+
+  const decks = $('decks');
+  const cardEls = [];
+  CATS.forEach(([key, name], ci) => {
+    const deck = h('div', { class: 'deck' });
+    const sec = h('section', { class: 'card', id: 's12-' + (ci + 1), 'data-title': '12.' + (ci + 1) + ' ' + name },
+      h('h2', null, h('span', { class: 'num' }, '12.' + (ci + 1)), name), deck);
+    sec.dataset.cat = key;
+    decks.append(sec);
+  });
+  // sections were created after the shared chip code ran: add their chips now
+  document.querySelectorAll('#decks section.card').forEach((sec) => {
+    const link = h('a', { href: '#' + sec.id }, sec.dataset.title);
+    chips.append(link);
+    chipLinks.push(link);
+    io.observe(sec);
+  });
+
+  Q.forEach(([cat, q, a, refs], i) => {
+    const id = hash(q);
+    const knownBtn = h('button', { type: 'button', class: 'knownbtn' }, '✓ I know this');
+    const flipBtn = h('button', { type: 'button', class: 'primary' }, 'Show answer');
+    const backBtn = h('button', { type: 'button' }, '↩ Question');
+    const knownBtn2 = h('button', { type: 'button', class: 'knownbtn' }, '✓ I know this');
+    const catName = CATS.find((c) => c[0] === cat)[1];
+    const fc = h('div', { class: 'fc' },
+      h('div', { class: 'fc-inner' },
+        h('div', { class: 'face front' }, h('div', { class: 'tag' }, catName), h('div', { class: 'q', html: fmt(q) }), h('div', { class: 'cardbtns' }, flipBtn, knownBtn)),
+        h('div', { class: 'face back' }, h('div', { class: 'tag' }, 'Answer'), h('div', { class: 'a', html: '<p>' + fmt(a) + '</p>' }), h('div', { class: 'refs' }, 'Notes: ' + refs), h('div', { class: 'cardbtns' }, backBtn, knownBtn2))));
+    const setFlip = (v) => { fc.classList.toggle('flipped', v); };
+    flipBtn.addEventListener('click', () => setFlip(true));
+    backBtn.addEventListener('click', () => setFlip(false));
+    const toggleKnown = () => { if (known.has(id)) known.delete(id); else known.add(id); saveKnown(); render(); };
+    knownBtn.addEventListener('click', toggleKnown);
+    knownBtn2.addEventListener('click', toggleKnown);
+    cardEls[i] = { fc, id, cat, knownBtns: [knownBtn, knownBtn2] };
+  });
+
+  // filters
+  const filters = $('filters');
+  const fBtns = [];
+  [['all', 'All']].concat(CATS).forEach(([key, name]) => {
+    const b = h('button', { type: 'button' }, name);
+    b.addEventListener('click', () => { activeCat = key; render(); });
+    fBtns.push([key, b]);
+    filters.append(b);
+  });
+
+  function render() {
+    const hideKnown = $('hideKnown').checked;
+    document.body.classList.toggle('showall', $('showAll').checked);
+    fBtns.forEach(([k, b]) => b.classList.toggle('on', k === activeCat));
+    document.querySelectorAll('#decks section').forEach((sec) => {
+      const deck = sec.querySelector('.deck');
+      deck.innerHTML = '';
+      const visibleCat = activeCat === 'all' || activeCat === sec.dataset.cat;
+      let n = 0;
+      if (visibleCat) order.forEach((i) => {
+        const c = cardEls[i];
+        if (c.cat !== sec.dataset.cat) return;
+        const isKnown = known.has(c.id);
+        c.fc.classList.toggle('known', isKnown);
+        c.knownBtns.forEach((b) => { b.classList.toggle('on', isKnown); b.textContent = isKnown ? '✓ Known' : '✓ I know this'; });
+        if (hideKnown && isKnown) return;
+        deck.append(c.fc);
+        n++;
+      });
+      if (visibleCat && !n) deck.append(h('p', { class: 'empty' }, 'All cards in this category are marked as known. 🎉'));
+      sec.hidden = !visibleCat;
+    });
+    const total = Q.length, k = cardEls.filter((c) => known.has(c.id)).length;
+    $('progText').textContent = `${k} / ${total} known`;
+    $('progBar').style.width = (100 * k / total) + '%';
+  }
+  $('hideKnown').addEventListener('change', render);
+  $('showAll').addEventListener('change', render);
+  $('shuffleBtn').addEventListener('click', () => {
+    for (let i = order.length - 1; i > 0; i--) { const j = Math.floor(Math.random() * (i + 1)); [order[i], order[j]] = [order[j], order[i]]; }
+    cardEls.forEach((c) => c.fc.classList.remove('flipped'));
+    render();
+  });
+  $('orderBtn').addEventListener('click', () => { order = Q.map((_, i) => i); render(); });
+  $('resetBtn').addEventListener('click', () => { if (confirm('Forget which cards you marked as known?')) { known = new Set(); saveKnown(); render(); } });
+  render();
+})();
+</script>
+</body>
+</html>

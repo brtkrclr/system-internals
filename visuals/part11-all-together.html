@@ -1,0 +1,497 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>One Command, Every Layer</title>
+<meta name="description" content="Animated walkthrough of cat notes.txt | grep inode > out.txt through the terminal, shell, kernel, page cache, disk and scheduler, with a Ctrl+C branch.">
+<script>
+  (function () {
+    var saved = null;
+    try { saved = localStorage.getItem('theme'); } catch (e) {}
+    var dark = saved ? saved === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches;
+    document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+  })();
+</script>
+<style>
+  :root {
+    --bg: #ffffff; --surface: #f6f8fa; --surface-2: #eaeef2; --text: #1f2328; --muted: #59636e;
+    --border: #d0d7de; --accent: #0969da; --accent-soft: #ddf4ff;
+    --c-blue: #0969da; --c-pink: #bf3989; --c-green: #1a7f37; --c-amber: #9a6700; --c-purple: #8250df; --c-red: #cf222e;
+    --c-blue-soft: #ddf4ff; --c-pink-soft: #ffeff7; --c-green-soft: #dafbe1; --c-amber-soft: #fff8c5; --c-purple-soft: #fbefff; --c-red-soft: #ffebe9;
+    --hatch: repeating-linear-gradient(45deg, transparent 0 4px, rgba(130,80,223,.22) 4px 7px);
+    --radius: 8px;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  html[data-theme="dark"] {
+    --bg: #0d1117; --surface: #151b23; --surface-2: #212830; --text: #e6edf3; --muted: #9198a1;
+    --border: #3d444d; --accent: #4493f8; --accent-soft: rgba(56,139,253,.15);
+    --c-blue: #4493f8; --c-pink: #f778ba; --c-green: #3fb950; --c-amber: #d29922; --c-purple: #ab7df8; --c-red: #f85149;
+    --c-blue-soft: rgba(56,139,253,.18); --c-pink-soft: rgba(247,120,186,.16); --c-green-soft: rgba(63,185,80,.16);
+    --c-amber-soft: rgba(210,153,34,.18); --c-purple-soft: rgba(171,125,248,.18); --c-red-soft: rgba(248,81,73,.16);
+    --hatch: repeating-linear-gradient(45deg, transparent 0 4px, rgba(171,125,248,.30) 4px 7px);
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif; }
+  a { color: var(--accent); }
+  code, .mono { font-family: var(--mono); font-size: .92em; }
+  code { background: var(--surface-2); padding: .1em .35em; border-radius: 4px; }
+
+  header.top { max-width: 1040px; margin: 0 auto; padding: 32px 16px 8px; }
+  header.top h1 { margin: 0 0 6px; font-size: clamp(28px, 5vw, 40px); line-height: 1.15; }
+  header.top p { margin: 0 0 8px; color: var(--muted); max-width: 70ch; }
+  .backlink { font-size: 14px; }
+
+  nav.chips { position: sticky; top: 0; z-index: 10; background: var(--bg); border-bottom: 1px solid var(--border); }
+  nav.chips .inner { max-width: 1040px; margin: 0 auto; padding: 8px 16px; display: flex; gap: 6px; overflow-x: auto; scrollbar-width: thin; }
+  nav.chips a { flex: none; font-size: 13px; padding: 4px 10px; border: 1px solid var(--border); border-radius: 999px;
+                color: var(--text); text-decoration: none; background: var(--surface); white-space: nowrap; }
+  nav.chips a:hover, nav.chips a.active { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+
+  main { max-width: 1040px; margin: 0 auto; padding: 8px 16px 64px; }
+  section.card { border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin: 24px 0; background: var(--bg); scroll-margin-top: 56px; }
+  section.card > h2 { margin: 0 0 4px; font-size: 22px; }
+  section.card > h2 .num { color: var(--muted); font-weight: 500; margin-right: 6px; }
+  .lead { color: var(--muted); margin: 0 0 16px; max-width: 75ch; }
+  .demo { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; margin: 12px 0; overflow-x: auto; }
+  .demo h3 { margin: 0 0 10px; font-size: 15px; }
+  .row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+  .stack { display: flex; flex-direction: column; gap: 10px; }
+  .connect { font-size: 14px; color: var(--muted); border-left: 3px solid var(--accent); padding: 4px 0 4px 10px; margin-top: 14px; }
+  .hint { font-size: 13px; color: var(--muted); }
+  .big { font-family: var(--mono); font-size: 22px; font-weight: 600; }
+  .stat { display: inline-flex; flex-direction: column; padding: 6px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg); min-width: 90px; }
+  .stat .k { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  .stat .v { font-family: var(--mono); font-size: 18px; font-weight: 600; }
+  .ok { color: var(--c-green); } .bad { color: var(--c-red); } .warn { color: var(--c-amber); }
+
+  button, select, input[type="text"], input[type="number"] {
+    font: inherit; font-size: 14px; color: var(--text); background: var(--bg);
+    border: 1px solid var(--border); border-radius: 6px; padding: 5px 10px;
+  }
+  button { cursor: pointer; }
+  button:hover { background: var(--surface-2); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover { filter: brightness(1.08); background: var(--accent); }
+  button:focus-visible, select:focus-visible, input:focus-visible, .bit:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  input[type="range"] { accent-color: var(--accent); width: min(360px, 100%); }
+  label.inline { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; }
+
+  /* bits */
+  .bits { display: inline-flex; gap: 4px; flex-wrap: nowrap; }
+  .bitcol { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+  .bit { width: 34px; height: 40px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg);
+         font: 600 18px var(--mono); color: var(--muted); cursor: pointer; padding: 0; transition: background .12s, color .12s; }
+  .bit.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .bit.sm { width: 22px; height: 30px; font-size: 14px; }
+  .bitcol .w { font: 11px var(--mono); color: var(--muted); }
+  .nibble { display: inline-flex; flex-direction: column; align-items: center; gap: 6px; padding: 6px; border: 1px dashed var(--border); border-radius: 8px; }
+  .nibble .hx { font: 700 22px var(--mono); color: var(--c-pink); }
+  .gap { width: 10px; }
+
+  /* byte cells */
+  .cells { display: grid; gap: 2px; }
+  .cell { height: 30px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg);
+          font: 11px var(--mono); color: var(--muted); display: flex; align-items: center; justify-content: center; position: relative; }
+  .cell.hl { background: var(--c-blue-soft); border-color: var(--c-blue); color: var(--text); font-weight: 600; }
+  .cell.hl2 { background: var(--c-pink-soft); border-color: var(--c-pink); color: var(--text); }
+  .cell.pad { background: var(--hatch), var(--bg); border-style: dashed; }
+  .cell.line { background: var(--c-amber-soft); }
+  .cell.boxstart { margin-left: 6px; }
+  .cell.lineb { box-shadow: -4px 0 0 0 var(--c-red); margin-left: 8px; }
+
+  table.mem { border-collapse: collapse; font-family: var(--mono); font-size: 14px; }
+  table.mem th, table.mem td { border: 1px solid var(--border); padding: 4px 10px; text-align: center; }
+  table.mem th { background: var(--surface-2); font-weight: 600; font-family: inherit; font-size: 13px; }
+
+  .tiles { display: grid; gap: 1px; }
+  .tile { width: 9px; height: 9px; background: var(--surface-2); border-radius: 1px; }
+  .tile.mark { background: var(--c-pink); }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 13px; color: var(--muted); }
+  .legend span::before { content: ""; display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 5px; vertical-align: -2px; background: var(--sw); border: 1px solid var(--border); }
+
+  /* address space */
+  .addrspace { display: grid; grid-template-columns: 120px 1fr; gap: 0; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; font-size: 13px; max-width: 560px; }
+  .addrspace > div { padding: 8px 10px; border-bottom: 1px solid var(--border); }
+  .addrspace .lbl { font-family: var(--mono); font-size: 11px; color: var(--muted); background: var(--surface-2); }
+  .addrspace .zone.kern { background: var(--c-purple-soft); }
+  .addrspace .zone.hole { background: var(--hatch), var(--bg); color: var(--muted); }
+  .addrspace .zone.user { background: var(--c-green-soft); }
+  .addrspace .zone.here { outline: 3px solid var(--accent); outline-offset: -3px; font-weight: 600; }
+  .bar { height: 26px; border-radius: 6px; display: flex; overflow: hidden; border: 1px solid var(--border); font-size: 12px; }
+  .bar > div { display: flex; align-items: center; justify-content: center; color: var(--text); white-space: nowrap; overflow: hidden; }
+  .logbar { display: grid; grid-template-columns: 110px 1fr 90px; gap: 6px 10px; align-items: center; font-size: 13px; }
+  .logbar .fill { height: 14px; border-radius: 4px; background: var(--accent); }
+
+  /* struct */
+  .fields { display: flex; flex-direction: column; gap: 6px; }
+  .field { display: flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 14px; }
+  .field .sw { width: 14px; height: 14px; border-radius: 3px; }
+  .field button { padding: 2px 8px; font-size: 13px; }
+  .structgrid { display: grid; grid-template-columns: 56px repeat(8, minmax(38px, 1fr)); gap: 3px; align-items: center; max-width: 520px; }
+  .structgrid .off { font: 11px var(--mono); color: var(--muted); text-align: right; padding-right: 6px; }
+  .structgrid .cell { height: 34px; font-size: 12px; color: var(--text); }
+
+  /* matrix sim */
+  .matrix { display: grid; grid-template-columns: repeat(8, 30px); gap: 3px; }
+  .matrix .cell { height: 30px; transition: background .1s; }
+  .matrix .cell.cached { background: var(--c-blue-soft); }
+  .matrix .cell.hit { background: var(--c-green); color: #fff; border-color: var(--c-green); }
+  .matrix .cell.miss { background: var(--c-red); color: #fff; border-color: var(--c-red); }
+  .matrix .cell.gb { margin-left: 5px; }
+
+  .cores { display: grid; grid-template-columns: repeat(2, minmax(160px, 1fr)); gap: 12px; max-width: 560px; }
+  .core { border: 1px solid var(--border); border-radius: 8px; padding: 10px; background: var(--bg); transition: box-shadow .15s; }
+  .core.flash { box-shadow: 0 0 0 3px var(--c-red); }
+  .core h4 { margin: 0 0 6px; font-size: 14px; }
+  .state { font: 600 13px var(--mono); padding: 2px 6px; border-radius: 4px; }
+  .state.M { background: var(--c-green-soft); color: var(--c-green); }
+  .state.I { background: var(--c-red-soft); color: var(--c-red); }
+  .state.S { background: var(--c-blue-soft); color: var(--c-blue); }
+  .state.none { background: var(--surface-2); color: var(--muted); }
+
+  /* float */
+  .fbits { display: flex; flex-wrap: wrap; gap: 2px; }
+  .fbits .bit { width: 20px; height: 30px; font-size: 13px; }
+  .fbits .bit.s { --tone: var(--c-red); } .fbits .bit.e { --tone: var(--c-blue); } .fbits .bit.f { --tone: var(--c-green); }
+  .fbits .bit { border-color: var(--tone); color: var(--tone); }
+  .fbits .bit.on { background: var(--tone); color: #fff; }
+  .fbits .sep { width: 8px; }
+  .exact { font-family: var(--mono); font-size: 13px; word-break: break-all; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; }
+
+  /* utf8 */
+  .cps { display: flex; flex-wrap: wrap; gap: 10px; }
+  .cp { border: 1px solid var(--border); border-radius: 8px; background: var(--bg); padding: 10px; min-width: 150px; }
+  .cp .ch { font-size: 30px; line-height: 1.1; }
+  .cp .u { font: 600 13px var(--mono); color: var(--c-purple); }
+  .cp .bytes { font: 13px var(--mono); margin-top: 6px; }
+  .cp .pre { color: var(--muted); }
+  .cp .pay { color: var(--c-green); font-weight: 600; }
+  .cp .hexb { color: var(--c-pink); }
+
+  svg text { font-family: var(--mono); }
+  .theme-btn { position: fixed; top: 10px; right: 12px; z-index: 20; width: 34px; height: 34px; padding: 0; font-size: 16px; }
+  @media (max-width: 600px) {
+    section.card { padding: 14px; }
+    .bit { width: 30px; height: 36px; font-size: 16px; }
+    .structgrid { grid-template-columns: 44px repeat(8, minmax(28px, 1fr)); }
+  }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+
+  footer.pagenav { max-width: 1040px; margin: 0 auto; padding: 0 16px 48px; display: flex; flex-wrap: wrap; gap: 8px 16px; justify-content: space-between; font-size: 14px; }
+  footer.pagenav a { text-decoration: none; }
+  .badge { display: inline-block; font: 600 12px var(--mono); padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface-2); color: var(--muted); }
+  .badge.R { background: var(--c-green-soft); color: var(--c-green); border-color: var(--c-green); }
+  .badge.S { background: var(--c-blue-soft); color: var(--c-blue); border-color: var(--c-blue); }
+  .badge.D { background: var(--c-amber-soft); color: var(--c-amber); border-color: var(--c-amber); }
+  .badge.Z { background: var(--c-purple-soft); color: var(--c-purple); border-color: var(--c-purple); }
+  .badge.X { background: var(--c-red-soft); color: var(--c-red); border-color: var(--c-red); }
+  .log { font: 12.5px/1.5 var(--mono); background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; height: 150px; overflow-y: auto; white-space: pre-wrap; }
+  .box { border: 1px solid var(--border); border-radius: 8px; background: var(--bg); padding: 10px; }
+  .box h4 { margin: 0 0 6px; font-size: 14px; }
+  .on-acc { outline: 3px solid var(--accent); outline-offset: 1px; }
+  table.grid { border-collapse: collapse; font-size: 14px; width: 100%; }
+  table.grid th, table.grid td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; vertical-align: top; }
+  table.grid th { background: var(--surface-2); font-size: 13px; }
+  table.grid tr.pick td { background: var(--accent-soft); }
+  .steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+  .steps li { padding: 6px 10px; border-radius: 6px; border: 1px solid transparent; font-size: 14px; cursor: pointer; }
+  .steps li.cur { border-color: var(--accent); background: var(--accent-soft); font-weight: 600; }
+  .steps li.done { color: var(--muted); }
+
+  .sysgrid { display: grid; grid-template-columns: 110px repeat(4, minmax(150px, 1fr)); gap: 8px; align-items: stretch; min-width: 760px; }
+  .lane { font: 600 11px var(--mono); color: var(--muted); text-transform: uppercase; letter-spacing: .05em; display: flex; align-items: center; }
+  .boundary { grid-column: 1 / -1; border-top: 2px dashed var(--c-red); position: relative; height: 0; margin: 6px 0; }
+  .boundary span { position: absolute; top: -10px; left: 120px; background: var(--surface); padding: 0 8px; font: 11px var(--mono); color: var(--c-red); }
+  .comp { border: 1px solid var(--border); border-radius: 8px; background: var(--bg); padding: 8px 10px; font-size: 13px; transition: box-shadow .2s, opacity .2s; min-height: 64px; }
+  .comp h4 { margin: 0 0 4px; font-size: 13px; display: flex; justify-content: space-between; gap: 6px; align-items: center; }
+  .comp.act { box-shadow: 0 0 0 3px var(--accent); }
+  .comp h4 .badge { flex: none; white-space: nowrap; }
+  .comp.gone { opacity: .35; }
+  .comp .fd { font: 11.5px/1.45 var(--mono); color: var(--muted); }
+  .comp .fd b { color: var(--text); font-weight: 600; }
+  .comp .note { font: 11.5px var(--mono); color: var(--muted); }
+  .pipefill { height: 12px; border: 1px solid var(--border); border-radius: 4px; overflow: hidden; background: var(--surface-2); margin-top: 4px; }
+  .pipefill > div { height: 100%; background: var(--c-blue); transition: width .3s; }
+  .syscall { font: 13px var(--mono); background: var(--bg); border: 1px solid var(--border); border-left: 4px solid var(--c-pink); border-radius: 6px; padding: 8px 10px; word-break: break-word; }
+  .stepinfo h3 { font-size: 18px; margin: 0 0 4px; }
+  .stepinfo ul { margin: 8px 0 0; padding-left: 20px; }
+  .stepinfo li { margin: 3px 0; }
+  .refs { font: 12px var(--mono); color: var(--accent); }
+  .ctrl { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .ctrl input[type="range"] { width: min(420px, 100%); }
+  button.danger { border-color: var(--c-red); color: var(--c-red); }
+  button.danger:disabled { opacity: .4; cursor: not-allowed; }
+  .branchtag { font: 600 12px var(--mono); color: var(--c-red); }
+</style>
+</head>
+<body>
+<button class="theme-btn" id="themeBtn" type="button" aria-label="Toggle dark mode"></button>
+
+<header class="top">
+  <a class="backlink" href="../#11-putting-it-all-together-one-command-every-layer">← Back to the notes: Part 11</a>
+  <h1>One Command, Every Layer</h1>
+  <p>Follow cat notes.txt | grep inode > out.txt from keystroke to disk. Each step lights up the parts of the system involved, with process states, fd tables, the current system call and the sections behind it.</p>
+</header>
+
+<nav class="chips" aria-label="Sections"><div class="inner" id="chips"></div></nav>
+
+<main>
+
+<section class="card" id="s11-1" data-title="Walkthrough">
+  <h2><span class="num">11</span>The Walkthrough</h2>
+  <p class="lead"><code>$ cat notes.txt | grep inode &gt; out.txt</code>. Use Next, Play or the scrubber. While data is flowing (steps 9–12) you can press Ctrl+C to take the other branch.</p>
+  <div class="demo">
+    <div class="ctrl">
+      <button type="button" id="wPrev">◀ Prev</button>
+      <button type="button" id="wNext" class="primary">Next ▶</button>
+      <button type="button" id="wPlay">▶ Play</button>
+      <input type="range" id="wScrub" min="0" max="0" value="0" aria-label="step">
+      <span class="mono hint" id="wCount"></span>
+      <button type="button" id="wCtrlC" class="danger">⌃C press Ctrl+C here</button>
+      <button type="button" id="wNormal" style="display:none">↩ normal run</button>
+    </div>
+  </div>
+  <div class="demo" style="overflow-x:auto">
+    <div class="sysgrid" id="sys">
+      <div class="lane">user space</div>
+      <div class="comp" id="c-term"><h4>terminal emulator</h4><div class="note">draws the screen, holds the PTY master</div></div>
+      <div class="comp" id="c-bash"></div>
+      <div class="comp" id="c-cat"></div>
+      <div class="comp" id="c-grep"></div>
+      <div class="boundary"><span>system call boundary: Ring 3 above, Ring 0 below (2.6, 3.3)</span></div>
+      <div class="lane">kernel</div>
+      <div class="comp" id="c-pty"><h4>TTY / PTY</h4><div class="note">line discipline, /dev/pts/0, Ctrl+C → SIGINT</div></div>
+      <div class="comp" id="c-sched"><h4>scheduler + CPUs</h4><div class="note" id="schedNote"></div></div>
+      <div class="comp" id="c-pipe"><h4>pipe buffer</h4><div class="note" id="pipeNote"></div><div class="pipefill"><div id="pipeBar"></div></div></div>
+      <div class="comp" id="c-pcache"><h4>VFS + page cache</h4><div class="note" id="cacheNote"></div></div>
+      <div class="lane">hardware</div>
+      <div class="comp" id="c-kbd"><h4>keyboard</h4><div class="note">(or sshd's network socket)</div></div>
+      <div class="comp" id="c-cpu"><h4>timer interrupts</h4><div class="note">every few ms on each core: chances to preempt (3.4)</div></div>
+      <div class="comp" id="c-none" style="visibility:hidden"></div>
+      <div class="comp" id="c-disk"><h4>NVMe SSD</h4><div class="note">DMA into RAM, then an interrupt (2.5)</div></div>
+    </div>
+  </div>
+  <div class="demo stepinfo">
+    <div class="row" style="justify-content:space-between"><h3 id="sTitle"></h3><span class="branchtag" id="sBranch"></span></div>
+    <div class="refs" id="sRefs"></div>
+    <div class="syscall" id="sSys" style="margin-top:8px"></div>
+    <ul id="sText"></ul>
+  </div>
+  <div class="connect">Connection: this is the whole set of notes in one command. Part 12 asks questions that only make sense once these steps are clear.</div>
+</section>
+
+<section class="card" id="s11-2" data-title="All steps">
+  <h2><span class="num">11.1</span>All Steps</h2>
+  <p class="lead">Click any step to jump there in the walkthrough above.</p>
+  <ol class="steps" id="allSteps"></ol>
+  <div class="connect">Connection: steps 1–8 are mostly Part 4 (processes) and Part 7 (fds); 9–13 are Parts 6–9; 14–16 are Parts 4, 6 and 7.</div>
+</section>
+
+<section class="card" id="s11-3" data-title="Ctrl+C">
+  <h2><span class="num">11.2</span>What If You Press Ctrl+C Halfway?</h2>
+  <p class="lead">The terminal driver in the kernel, not bash, sees <code>^C</code> and sends SIGINT to every process in the foreground process group: cat and grep, but not bash.</p>
+  <ol class="steps" id="branchSteps"></ol>
+  <div class="row" style="margin-top:10px"><button type="button" id="jumpBranch" class="primary">Show it in the walkthrough</button></div>
+  <div class="connect">Connection: process groups and the controlling terminal (4.5), signal delivery on return to user mode (8.1), exit status 128 + 2 = 130 (4.9), stdio buffers that only lived in grep's memory (7.6).</div>
+</section>
+
+<section class="card" id="s11-4" data-title="Summary table">
+  <h2><span class="num">11.3</span>The Same Story as a Table</h2>
+  <div style="overflow-x:auto"><table class="grid">
+    <tr><th>Step</th><th>What happened</th><th>Parts</th></tr>
+    <tr><td>Key press → bash wakes</td><td>TTY line discipline, wait queues, scheduler</td><td>4.9, 7.7, 3.6</td></tr>
+    <tr><td>Parse, $PATH lookup</td><td>shell logic, stat(), dentry cache</td><td>4.9, 7.3</td></tr>
+    <tr><td>pipe, fork, dup2</td><td>fd tables, open file descriptions, COW, process groups</td><td>7.1, 7.2, 9.1, 4.5</td></tr>
+    <tr><td>execve</td><td>binfmt, VMAs, dynamic linking, demand paging</td><td>4.9, 6.4–6.6</td></tr>
+    <tr><td>open / read</td><td>syscalls, rings, VFS, permissions, page cache, DMA, interrupts, D state</td><td>2.6, 3.3, 7.4, 7.11, 6.7, 2.5, 3.4</td></tr>
+    <tr><td>Pipe flow</td><td>blocking I/O, backpressure, context switches, multi-core</td><td>9.1, 7.7, 3.5</td></tr>
+    <tr><td>Output</td><td>stdio buffering, dirty pages, writeback</td><td>7.6, 6.7</td></tr>
+    <tr><td>Exit</td><td>zombies, SIGCHLD, wait, exit codes</td><td>4.9, Part 8</td></tr>
+    <tr><td>Under it all</td><td>bits, caches, TLB, privilege levels</td><td>Parts 1, 2</td></tr>
+  </table></div>
+  <div class="connect">Connection: if you can tell this story end to end and explain why each step works the way it does, you understand system internals.</div>
+</section>
+
+</main>
+
+<footer class="pagenav">
+  <a href="part10-containers.html">← Part 10: Containers</a>
+  <a href="index.html">All visuals</a>
+  <a href="part12-quiz.html">Part 12: Quiz →</a>
+</footer>
+
+<script>
+(function () {
+  'use strict';
+
+  const $ = (id) => document.getElementById(id);
+  const h = (tag, props, ...kids) => {
+    const n = document.createElement(tag);
+    if (props) for (const k in props) {
+      if (k === 'class') n.className = props[k];
+      else if (k === 'style') n.style.cssText = props[k];
+      else if (k.startsWith('on')) n.addEventListener(k.slice(2), props[k]);
+      else n.setAttribute(k, props[k]);
+    }
+    for (const kid of kids.flat()) if (kid != null && kid !== false) n.append(kid);
+    return n;
+  };
+  const NS = 'http://www.w3.org/2000/svg';
+  const sv = (tag, attrs, text) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (text != null) e.textContent = text; return e; };
+  const hex = (n, w) => n.toString(16).toUpperCase().padStart(w, '0');
+  const bin = (n, w) => n.toString(2).padStart(w, '0');
+  const stat = (k, v, cls) => h('div', { class: 'stat' }, h('span', { class: 'k' }, k), h('span', { class: 'v ' + (cls || '') }, String(v)));
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  const themeBtn = $('themeBtn');
+  function applyTheme(t) {
+    document.documentElement.setAttribute('data-theme', t);
+    themeBtn.innerHTML = t === 'dark' ? '&#9728;' : '&#9790;';
+    themeBtn.title = t === 'dark' ? 'Switch to light mode' : 'Switch to dark mode';
+  }
+  applyTheme(document.documentElement.getAttribute('data-theme'));
+  themeBtn.addEventListener('click', () => {
+    const t = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+    try { localStorage.setItem('theme', t); } catch (e) {}
+    applyTheme(t);
+  });
+
+  const chips = $('chips');
+  const sections = [...document.querySelectorAll('section.card')];
+  sections.forEach((s) => chips.append(h('a', { href: '#' + s.id }, s.dataset.title)));
+  const chipLinks = [...chips.children];
+  const io = new IntersectionObserver((entries) => {
+    entries.forEach((e) => {
+      if (!e.isIntersecting) return;
+      chipLinks.forEach((a) => a.classList.toggle('active', a.getAttribute('href') === '#' + e.target.id));
+      const act = chips.querySelector('.active');
+      if (act) act.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    });
+  }, { rootMargin: '-45% 0px -50% 0px' });
+  sections.forEach((s) => io.observe(s));
+
+
+  const PTS = '/dev/pts/0';
+  const BASE = [[0, PTS], [1, PTS], [2, PTS]];
+  const WITHPIPE = BASE.concat([[3, 'pipe (read end)'], [4, 'pipe (write end)']]);
+  const MAIN = [
+    { t: 'Idle: bash waits for input', refs: '4.8, 7.7', act: ['bash'], sys: 'bash: read(0, buf, 1)   ← sleeping', st: { bash: 'S', cat: null, grep: null }, fd: { bash: BASE }, pipe: null, cache: { notes: 'not cached yet', out: '(does not exist)' }, sched: 'bash is not on any run queue: it sleeps on the TTY wait queue',
+      text: ['bash is sleeping in read() on its stdin, the PTY slave /dev/pts/0, in state S.', 'It uses no CPU while it waits: it is on the TTY\'s wait queue, not on a run queue.'] },
+    { t: 'Keystrokes reach bash', refs: '4.9 step 0, 7.7, 3.6, 3.5', act: ['kbd', 'term', 'pty', 'bash', 'sched'], sys: 'terminal → PTY master; bash: read(0, …) returns the keys', st: { bash: 'R' }, sched: 'bash woken: S → R, put on a run queue, then given a CPU (context switch)',
+      text: ['Each key reaches the PTY master; the TTY line discipline in the kernel buffers it.', 'The new input wakes bash; the scheduler soon gives it a CPU.', 'When you press Enter, readline returns the whole line.'] },
+    { t: 'bash parses the line', refs: '4.9, 7.3, 7.5', act: ['bash', 'pcache'], sys: 'stat("/usr/bin/cat") = 0;  stat("/usr/bin/grep") = 0', sched: 'bash running',
+      text: ['Tokens: cat, notes.txt, |, grep, inode, >, out.txt: a pipeline of two commands with an output redirection on the second.', 'cat and grep are not aliases, functions or builtins, so bash searches $PATH with stat(), which walks the dentry cache.'] },
+    { t: 'bash creates the pipe', refs: '9.1, 7.1, 7.2', act: ['bash', 'pipe'], sys: 'pipe2([3, 4], 0) = 0', fd: { bash: WITHPIPE }, pipe: 0,
+      text: ['The kernel creates a pipe inode in pipefs with a 64 KiB buffer and two struct files.', 'bash gets fd 3 (read end) and fd 4 (write end): the lowest free numbers.'] },
+    { t: 'bash forks two children', refs: '4.9 step 3, 4.5', act: ['bash', 'cat', 'grep', 'sched'], sys: 'clone(SIGCHLD) = 5301;  clone(SIGCHLD) = 5302', st: { cat: 'R', grep: 'R' }, fd: { cat: WITHPIPE, grep: WITHPIPE }, names: { cat: 'child 1 (still bash)', grep: 'child 2 (still bash)' }, sched: 'three runnable tasks: bash, child 1, child 2',
+      text: ['Two new task_structs and PIDs. Each child gets a COPY of bash\'s fd table, so both also hold fds 3 and 4.', 'Memory is copy-on-write: page tables are copied, data pages are shared until someone writes.', 'Both children go into a new process group, and bash makes it the terminal\'s foreground group.'] },
+    { t: 'Child 1 becomes cat', refs: '7.5, 4.9 steps 4–6, 6.4–6.6', act: ['cat', 'pcache'], sys: 'dup2(4, 1); close(3); close(4); execve("/usr/bin/cat", ["cat", "notes.txt"], envp)', fd: { cat: [[0, PTS], [1, 'pipe (write end)'], [2, PTS]] }, names: { cat: 'cat' },
+      text: ['dup2 makes stdout the pipe\'s write end; the original pipe fds are closed.', 'execve: permission check, binfmt_elf sees \\x7fELF, the COW copy of bash\'s memory is torn down and new VMAs are built.', 'ld.so maps libc.so.6, whose pages are already in the page cache (shared with every process); the first instructions minor-fault.'] },
+    { t: 'Child 2 becomes grep, writing to out.txt', refs: '7.3, 7.11, 7.5', act: ['grep', 'pcache'], sys: 'dup2(3, 0); close(3); close(4); openat("out.txt", O_WRONLY|O_CREAT|O_TRUNC, 0666) = 3; dup2(3, 1); close(3); execve("/usr/bin/grep", …)', fd: { grep: [[0, 'pipe (read end)'], [1, 'out.txt'], [2, PTS]] }, names: { grep: 'grep' }, cache: { out: 'new inode, empty' },
+      text: ['stdin becomes the pipe\'s read end.', 'Creating out.txt needs write + execute permission on the directory; ext4 allocates a new inode and adds a directory entry "out.txt → inode N".', 'Then stdout is pointed at out.txt and grep is exec\'d.'] },
+    { t: 'bash closes its pipe ends and waits', refs: '9.1, 4.9 step 7', act: ['bash'], sys: 'close(3); close(4); wait4(-1, …)   ← sleeping', st: { bash: 'S', grep: 'S' }, fd: { bash: BASE }, sched: 'bash sleeps in wait4(); grep sleeps on the empty pipe',
+      text: ['This matters: if bash kept fd 4 open, the pipe would always have a writer and grep would never see EOF.', 'bash sleeps in waitpid(). grep already tried read(0) on the empty pipe and sleeps too (S).'] },
+    { t: 'cat opens notes.txt and reads: page cache miss', refs: '3.3, 7.4, 6.7, 2.5, 4.8', act: ['cat', 'pcache', 'disk', 'sched'], sys: 'openat(AT_FDCWD, "notes.txt", O_RDONLY) = 3;  read(3, buf, 131072)   ← waiting for the disk', st: { cat: 'D' }, fd: { cat: [[0, PTS], [1, 'pipe (write end)'], [2, PTS], [3, 'notes.txt (f_pos 0)']] }, cache: { notes: 'MISS: reading from disk' }, sched: 'cat sleeps in D; other tasks (or the idle task) run', ctrlc: true,
+      text: ['read() is a system call: syscall instruction → Ring 0 → VFS → ext4 → page cache lookup by (inode, offset).', 'Miss: the block layer sends a request to the NVMe driver; the SSD DMAs the data into a fresh page-cache page.', 'cat sleeps in uninterruptible state D. Readahead also asks for the next pages.'] },
+    { t: 'Disk interrupt wakes cat', refs: '3.4, 6.5, 6.7', act: ['disk', 'sched', 'cat', 'pcache'], sys: 'read(3, buf, 131072) = 4096', st: { cat: 'R' }, cache: { notes: 'cached (shared by every reader)' }, sched: 'interrupt handler completes the I/O and wakes cat: D → R', ctrlc: true,
+      text: ['The SSD raises an interrupt; the handler completes the request and wakes cat.', 'The data is copied from the page-cache page into cat\'s buffer (the first touch of that buffer was itself a page fault: demand paging).'] },
+    { t: 'cat writes into the pipe; grep wakes up', refs: '9.1, 7.7, 3.6', act: ['cat', 'pipe', 'grep', 'sched'], sys: 'cat: write(1, buf, 4096) = 4096;  grep: read(0, …) = 4096', st: { grep: 'R' }, pipe: 65, sched: 'cat and grep may run in parallel on two cores', ctrlc: true,
+      text: ['cat\'s write copies into the pipe buffer. If grep were slow and the buffer filled up, cat would block: backpressure.', 'The write wakes grep from the pipe\'s wait queue; the scheduler runs it, maybe on another core.'] },
+    { t: 'grep filters and writes to out.txt', refs: '7.6, 6.7, 3.5', act: ['grep', 'pcache', 'cpu'], sys: 'grep: write(1, matches, 4096) = 4096   (stdio flush)', pipe: 15, cache: { out: 'DIRTY pages (not on disk yet)' }, ctrlc: true,
+      text: ['grep\'s stdout is a file, so stdio is fully buffered: matches collect in grep\'s own memory and are written in big chunks.', 'write() copies into out.txt\'s page-cache pages, marks them dirty and returns immediately.', 'Timer interrupts keep firing; the scheduler may preempt either process (involuntary context switch).'] },
+    { t: 'cat reaches EOF and exits', refs: '4.9 step 7, 9.1', act: ['cat', 'pipe'], sys: 'cat: read(3, …) = 0;  exit_group(0)', st: { cat: 'Z' }, fd: { cat: [] }, pipe: 0, pipeNote: 'last write end closed', sched: 'cat is a zombie: only its task_struct and exit status remain',
+      text: ['read() returns 0: end of file. cat exits; the kernel closes its fds.', 'That was the last write end of the pipe anywhere in the system.'] },
+    { t: 'grep sees EOF, flushes, exits', refs: '9.1, 7.6, 8.2', act: ['grep', 'bash', 'pcache'], sys: 'grep: read(0, …) = 0;  write(1, rest, n);  exit_group(0)   → SIGCHLD to bash', st: { grep: 'Z' }, fd: { grep: [] },
+      text: ['grep\'s next read(0) returns 0 (EOF on the pipe), it flushes its stdio buffer and exits with 0 (it found a match).', 'Each child becomes a zombie and the kernel sends SIGCHLD to bash.'] },
+    { t: 'bash reaps both children and shows the prompt', refs: '4.9, 4.5', act: ['bash', 'sched', 'term'], sys: 'wait4() = 5301; wait4() = 5302;  $? = 0  (${PIPESTATUS[@]} = 0 0)', st: { bash: 'R', cat: null, grep: null }, pipe: null, sched: 'zombies reaped: their task_structs are freed',
+      text: ['bash wakes from waitpid(), reaps both children, and sets $? to grep\'s status.', 'It takes the terminal\'s foreground back, prints the prompt, and goes back to sleep in read(0).'] },
+    { t: 'Later: writeback to disk', refs: '6.7, 7.15', act: ['pcache', 'disk'], sys: '(no syscall: a kernel flusher thread, 5–30 s later)', st: { bash: 'S' }, cache: { out: 'clean: written to the SSD, journal committed' }, sched: 'a kworker flusher thread runs briefly',
+      text: ['A flusher thread writes out.txt\'s dirty pages to the SSD (DMA again); ext4 commits the metadata through its journal.', 'If the power failed before this, out.txt could be empty or missing even though grep "succeeded". Only fsync() would have guaranteed it.'] },
+  ];
+  const BRANCH = [
+    { t: 'You press Ctrl+C', refs: '4.5, 7.5', act: ['kbd', 'term', 'pty'], sys: 'TTY driver: ^C seen (ISIG) → SIGINT to the foreground process group (cat and grep)', branch: true,
+      text: ['The terminal driver in the kernel, not bash, recognizes ^C.', 'It sends SIGINT to every process in the foreground process group: cat and grep. bash is in a different group and is not touched.'] },
+    { t: 'SIGINT is delivered: both terminate', refs: '8.1, 8.2, 7.6', act: ['cat', 'grep', 'sched'], sys: 'default action for SIGINT: terminate', st: { cat: 'Z', grep: 'Z' }, fd: { cat: [], grep: [] }, branch: true, sched: 'both become zombies; SIGCHLD to bash',
+      text: ['The signal is acted on when each process next returns to user mode (a sleeper in S is woken; a task in D finishes its I/O first).', 'Neither installed a handler, so the default action terminates them.', 'Any matches still sitting in grep\'s stdio buffer are lost: they only existed in grep\'s memory.'] },
+    { t: 'bash reaps them: $? = 130', refs: '4.9', act: ['bash', 'term'], sys: 'wait4() → WIFSIGNALED, WTERMSIG = 2  →  $? = 130 (128 + 2)', st: { bash: 'R', cat: null, grep: null }, pipe: null, branch: true,
+      text: ['bash reaps both children and reports status 130 = 128 + SIGINT.', 'out.txt exists but may be incomplete.'] },
+  ];
+  let path = MAIN.slice(), cur = 0, timer = null;
+
+  function stateAt(i) {
+    const S = { st: {}, fd: {}, names: { cat: 'child 1', grep: 'child 2' }, pipe: null, cache: {}, sched: '', pipeNote: '' };
+    for (let k = 0; k <= i; k++) {
+      const s = path[k];
+      if (s.st) Object.assign(S.st, s.st);
+      if (s.fd) Object.assign(S.fd, s.fd);
+      if (s.names) Object.assign(S.names, s.names);
+      if ('pipe' in s) { S.pipe = s.pipe; S.pipeNote = s.pipeNote || ''; }
+      if (s.cache) Object.assign(S.cache, s.cache);
+      if (s.sched) S.sched = s.sched;
+    }
+    return S;
+  }
+  const STATE_NAMES = { R: 'R running', S: 'S sleeping', D: 'D disk wait', Z: 'Z zombie' };
+  function procBox(id, title, state, fds) {
+    const el = $('c-' + id);
+    el.innerHTML = '';
+    const alive = state != null;
+    el.classList.toggle('gone', !alive);
+    el.append(h('h4', null, h('span', null, title), alive ? h('span', { class: 'badge ' + state }, STATE_NAMES[state]) : h('span', { class: 'badge' }, 'not running')));
+    if (alive) {
+      if (!fds || !fds.length) el.append(h('div', { class: 'fd' }, '(all fds closed)'));
+      else fds.forEach(([n, t]) => el.append(h('div', { class: 'fd' }, h('b', null, 'fd ' + n), ' → ' + t)));
+    }
+  }
+  function draw() {
+    const s = path[cur], S = stateAt(cur);
+    document.querySelectorAll('#sys .comp').forEach((c) => c.classList.toggle('act', s.act.includes(c.id.slice(2))));
+    procBox('bash', 'bash (4120)', S.st.bash, S.fd.bash);
+    procBox('cat', S.names.cat + (S.st.cat !== undefined && S.st.cat !== null ? ' (5301)' : ''), S.st.cat, S.fd.cat);
+    procBox('grep', S.names.grep + (S.st.grep !== undefined && S.st.grep !== null ? ' (5302)' : ''), S.st.grep, S.fd.grep);
+    $('schedNote').textContent = S.sched;
+    $('pipeNote').textContent = S.pipe == null ? '(no pipe)' : (S.pipeNote || `${Math.round(S.pipe * 0.64)} KiB of 64 KiB used`);
+    $('pipeBar').style.width = (S.pipe || 0) + '%';
+    $('cacheNote').innerHTML = '';
+    $('cacheNote').append(h('div', null, 'notes.txt: ' + (S.cache.notes || '')), h('div', null, 'out.txt: ' + (S.cache.out || '')));
+    $('sTitle').textContent = `${cur + 1}. ${s.t}`;
+    $('sBranch').textContent = s.branch ? 'Ctrl+C branch' : '';
+    $('sRefs').textContent = 'sections: ' + s.refs;
+    $('sSys').textContent = s.sys;
+    const ul = $('sText'); ul.innerHTML = '';
+    s.text.forEach((t) => ul.append(h('li', null, t)));
+    $('wScrub').max = path.length - 1; $('wScrub').value = cur;
+    $('wCount').textContent = `step ${cur + 1} / ${path.length}`;
+    $('wCtrlC').disabled = !s.ctrlc || path !== null && path.some((p) => p.branch);
+    $('wNormal').style.display = path.some((p) => p.branch) ? '' : 'none';
+    document.querySelectorAll('#allSteps li').forEach((li, i) => li.classList.toggle('cur', !path.some((p) => p.branch) && i === cur));
+    document.querySelectorAll('#branchSteps li').forEach((li, i) => li.classList.toggle('cur', path.some((p) => p.branch) && cur === path.length - BRANCH.length + i));
+  }
+  function go(i) { cur = Math.max(0, Math.min(path.length - 1, i)); draw(); }
+  function stop() { clearInterval(timer); timer = null; $('wPlay').textContent = '▶ Play'; }
+  $('wNext').addEventListener('click', () => { stop(); go(cur + 1); });
+  $('wPrev').addEventListener('click', () => { stop(); go(cur - 1); });
+  $('wScrub').addEventListener('input', () => { stop(); go(+$('wScrub').value); });
+  $('wPlay').addEventListener('click', () => {
+    if (timer) { stop(); return; }
+    if (cur >= path.length - 1) go(0);
+    $('wPlay').textContent = '❚❚ Pause';
+    timer = setInterval(() => { if (cur >= path.length - 1) { stop(); return; } go(cur + 1); }, 2600);
+  });
+  function ctrlC() { stop(); path = MAIN.slice(0, cur + 1).concat(BRANCH); go(cur + 1); }
+  $('wCtrlC').addEventListener('click', ctrlC);
+  $('wNormal').addEventListener('click', () => { stop(); const keep = Math.min(cur, MAIN.length - 1); path = MAIN.slice(); go(path[keep] && !path[keep].branch ? keep : 0); });
+
+  MAIN.forEach((s, i) => $('allSteps').append(h('li', { onclick: () => { stop(); path = MAIN.slice(); go(i); $('s11-1').scrollIntoView(); } }, `${i + 1}. ${s.t}`, h('span', { class: 'refs' }, '  (' + s.refs + ')'))));
+  BRANCH.forEach((s, i) => $('branchSteps').append(h('li', null, `${String.fromCharCode(65 + i)}. ${s.t}`, h('span', { class: 'refs' }, '  (' + s.refs + ')'))));
+  $('jumpBranch').addEventListener('click', () => { stop(); path = MAIN.slice(); cur = 10; ctrlC(); $('s11-1').scrollIntoView(); });
+  draw();
+
+})();
+</script>
+</body>
+</html>

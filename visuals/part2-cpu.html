@@ -1,0 +1,958 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CPU Fundamentals, Visualized</title>
+<meta name="description" content="Interactive visuals for Part 2 of System Internals: clock, pipelining, branch prediction, caches, TLB, MESI, DMA, privilege rings and the call stack.">
+<script>
+  (function () {
+    var saved = null;
+    try { saved = localStorage.getItem('theme'); } catch (e) {}
+    var dark = saved ? saved === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches;
+    document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+  })();
+</script>
+<style>
+  :root {
+    --bg: #ffffff; --surface: #f6f8fa; --surface-2: #eaeef2; --text: #1f2328; --muted: #59636e;
+    --border: #d0d7de; --accent: #0969da; --accent-soft: #ddf4ff;
+    --c-blue: #0969da; --c-pink: #bf3989; --c-green: #1a7f37; --c-amber: #9a6700; --c-purple: #8250df; --c-red: #cf222e;
+    --c-blue-soft: #ddf4ff; --c-pink-soft: #ffeff7; --c-green-soft: #dafbe1; --c-amber-soft: #fff8c5; --c-purple-soft: #fbefff; --c-red-soft: #ffebe9;
+    --hatch: repeating-linear-gradient(45deg, transparent 0 4px, rgba(130,80,223,.22) 4px 7px);
+    --radius: 8px;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  html[data-theme="dark"] {
+    --bg: #0d1117; --surface: #151b23; --surface-2: #212830; --text: #e6edf3; --muted: #9198a1;
+    --border: #3d444d; --accent: #4493f8; --accent-soft: rgba(56,139,253,.15);
+    --c-blue: #4493f8; --c-pink: #f778ba; --c-green: #3fb950; --c-amber: #d29922; --c-purple: #ab7df8; --c-red: #f85149;
+    --c-blue-soft: rgba(56,139,253,.18); --c-pink-soft: rgba(247,120,186,.16); --c-green-soft: rgba(63,185,80,.16);
+    --c-amber-soft: rgba(210,153,34,.18); --c-purple-soft: rgba(171,125,248,.18); --c-red-soft: rgba(248,81,73,.16);
+    --hatch: repeating-linear-gradient(45deg, transparent 0 4px, rgba(171,125,248,.30) 4px 7px);
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif; }
+  a { color: var(--accent); }
+  code, .mono { font-family: var(--mono); font-size: .92em; }
+  code { background: var(--surface-2); padding: .1em .35em; border-radius: 4px; }
+
+  header.top { max-width: 1040px; margin: 0 auto; padding: 32px 16px 8px; }
+  header.top h1 { margin: 0 0 6px; font-size: clamp(28px, 5vw, 40px); line-height: 1.15; }
+  header.top p { margin: 0 0 8px; color: var(--muted); max-width: 70ch; }
+  .backlink { font-size: 14px; }
+
+  nav.chips { position: sticky; top: 0; z-index: 10; background: var(--bg); border-bottom: 1px solid var(--border); }
+  nav.chips .inner { max-width: 1040px; margin: 0 auto; padding: 8px 16px; display: flex; gap: 6px; overflow-x: auto; scrollbar-width: thin; }
+  nav.chips a { flex: none; font-size: 13px; padding: 4px 10px; border: 1px solid var(--border); border-radius: 999px;
+                color: var(--text); text-decoration: none; background: var(--surface); white-space: nowrap; }
+  nav.chips a:hover, nav.chips a.active { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+
+  main { max-width: 1040px; margin: 0 auto; padding: 8px 16px 64px; }
+  section.card { border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin: 24px 0; background: var(--bg); scroll-margin-top: 56px; }
+  section.card > h2 { margin: 0 0 4px; font-size: 22px; }
+  section.card > h2 .num { color: var(--muted); font-weight: 500; margin-right: 6px; }
+  .lead { color: var(--muted); margin: 0 0 16px; max-width: 75ch; }
+  .demo { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; margin: 12px 0; overflow-x: auto; }
+  .demo h3 { margin: 0 0 10px; font-size: 15px; }
+  .row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+  .stack { display: flex; flex-direction: column; gap: 10px; }
+  .connect { font-size: 14px; color: var(--muted); border-left: 3px solid var(--accent); padding: 4px 0 4px 10px; margin-top: 14px; }
+  .hint { font-size: 13px; color: var(--muted); }
+  .big { font-family: var(--mono); font-size: 22px; font-weight: 600; }
+  .stat { display: inline-flex; flex-direction: column; padding: 6px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg); min-width: 90px; }
+  .stat .k { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  .stat .v { font-family: var(--mono); font-size: 18px; font-weight: 600; }
+  .ok { color: var(--c-green); } .bad { color: var(--c-red); } .warn { color: var(--c-amber); }
+
+  button, select, input[type="text"], input[type="number"] {
+    font: inherit; font-size: 14px; color: var(--text); background: var(--bg);
+    border: 1px solid var(--border); border-radius: 6px; padding: 5px 10px;
+  }
+  button { cursor: pointer; }
+  button:hover { background: var(--surface-2); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover { filter: brightness(1.08); background: var(--accent); }
+  button:focus-visible, select:focus-visible, input:focus-visible, .bit:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  input[type="range"] { accent-color: var(--accent); width: min(360px, 100%); }
+  label.inline { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; }
+
+  /* bits */
+  .bits { display: inline-flex; gap: 4px; flex-wrap: nowrap; }
+  .bitcol { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+  .bit { width: 34px; height: 40px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg);
+         font: 600 18px var(--mono); color: var(--muted); cursor: pointer; padding: 0; transition: background .12s, color .12s; }
+  .bit.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .bit.sm { width: 22px; height: 30px; font-size: 14px; }
+  .bitcol .w { font: 11px var(--mono); color: var(--muted); }
+  .nibble { display: inline-flex; flex-direction: column; align-items: center; gap: 6px; padding: 6px; border: 1px dashed var(--border); border-radius: 8px; }
+  .nibble .hx { font: 700 22px var(--mono); color: var(--c-pink); }
+  .gap { width: 10px; }
+
+  /* byte cells */
+  .cells { display: grid; gap: 2px; }
+  .cell { height: 30px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg);
+          font: 11px var(--mono); color: var(--muted); display: flex; align-items: center; justify-content: center; position: relative; }
+  .cell.hl { background: var(--c-blue-soft); border-color: var(--c-blue); color: var(--text); font-weight: 600; }
+  .cell.hl2 { background: var(--c-pink-soft); border-color: var(--c-pink); color: var(--text); }
+  .cell.pad { background: var(--hatch), var(--bg); border-style: dashed; }
+  .cell.line { background: var(--c-amber-soft); }
+  .cell.boxstart { margin-left: 6px; }
+  .cell.lineb { box-shadow: -4px 0 0 0 var(--c-red); margin-left: 8px; }
+
+  table.mem { border-collapse: collapse; font-family: var(--mono); font-size: 14px; }
+  table.mem th, table.mem td { border: 1px solid var(--border); padding: 4px 10px; text-align: center; }
+  table.mem th { background: var(--surface-2); font-weight: 600; font-family: inherit; font-size: 13px; }
+
+  .tiles { display: grid; gap: 1px; }
+  .tile { width: 9px; height: 9px; background: var(--surface-2); border-radius: 1px; }
+  .tile.mark { background: var(--c-pink); }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 13px; color: var(--muted); }
+  .legend span::before { content: ""; display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 5px; vertical-align: -2px; background: var(--sw); border: 1px solid var(--border); }
+
+  /* address space */
+  .addrspace { display: grid; grid-template-columns: 120px 1fr; gap: 0; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; font-size: 13px; max-width: 560px; }
+  .addrspace > div { padding: 8px 10px; border-bottom: 1px solid var(--border); }
+  .addrspace .lbl { font-family: var(--mono); font-size: 11px; color: var(--muted); background: var(--surface-2); }
+  .addrspace .zone.kern { background: var(--c-purple-soft); }
+  .addrspace .zone.hole { background: var(--hatch), var(--bg); color: var(--muted); }
+  .addrspace .zone.user { background: var(--c-green-soft); }
+  .addrspace .zone.here { outline: 3px solid var(--accent); outline-offset: -3px; font-weight: 600; }
+  .bar { height: 26px; border-radius: 6px; display: flex; overflow: hidden; border: 1px solid var(--border); font-size: 12px; }
+  .bar > div { display: flex; align-items: center; justify-content: center; color: var(--text); white-space: nowrap; overflow: hidden; }
+  .logbar { display: grid; grid-template-columns: 110px 1fr 90px; gap: 6px 10px; align-items: center; font-size: 13px; }
+  .logbar .fill { height: 14px; border-radius: 4px; background: var(--accent); }
+
+  /* struct */
+  .fields { display: flex; flex-direction: column; gap: 6px; }
+  .field { display: flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 14px; }
+  .field .sw { width: 14px; height: 14px; border-radius: 3px; }
+  .field button { padding: 2px 8px; font-size: 13px; }
+  .structgrid { display: grid; grid-template-columns: 56px repeat(8, minmax(38px, 1fr)); gap: 3px; align-items: center; max-width: 520px; }
+  .structgrid .off { font: 11px var(--mono); color: var(--muted); text-align: right; padding-right: 6px; }
+  .structgrid .cell { height: 34px; font-size: 12px; color: var(--text); }
+
+  /* matrix sim */
+  .matrix { display: grid; grid-template-columns: repeat(8, 30px); gap: 3px; }
+  .matrix .cell { height: 30px; transition: background .1s; }
+  .matrix .cell.cached { background: var(--c-blue-soft); }
+  .matrix .cell.hit { background: var(--c-green); color: #fff; border-color: var(--c-green); }
+  .matrix .cell.miss { background: var(--c-red); color: #fff; border-color: var(--c-red); }
+  .matrix .cell.gb { margin-left: 5px; }
+
+  .cores { display: grid; grid-template-columns: repeat(2, minmax(160px, 1fr)); gap: 12px; max-width: 560px; }
+  .core { border: 1px solid var(--border); border-radius: 8px; padding: 10px; background: var(--bg); transition: box-shadow .15s; }
+  .core.flash { box-shadow: 0 0 0 3px var(--c-red); }
+  .core h4 { margin: 0 0 6px; font-size: 14px; }
+  .state { font: 600 13px var(--mono); padding: 2px 6px; border-radius: 4px; }
+  .state.M { background: var(--c-green-soft); color: var(--c-green); }
+  .state.I { background: var(--c-red-soft); color: var(--c-red); }
+  .state.S { background: var(--c-blue-soft); color: var(--c-blue); }
+  .state.none { background: var(--surface-2); color: var(--muted); }
+
+  /* float */
+  .fbits { display: flex; flex-wrap: wrap; gap: 2px; }
+  .fbits .bit { width: 20px; height: 30px; font-size: 13px; }
+  .fbits .bit.s { --tone: var(--c-red); } .fbits .bit.e { --tone: var(--c-blue); } .fbits .bit.f { --tone: var(--c-green); }
+  .fbits .bit { border-color: var(--tone); color: var(--tone); }
+  .fbits .bit.on { background: var(--tone); color: #fff; }
+  .fbits .sep { width: 8px; }
+  .exact { font-family: var(--mono); font-size: 13px; word-break: break-all; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; }
+
+  /* utf8 */
+  .cps { display: flex; flex-wrap: wrap; gap: 10px; }
+  .cp { border: 1px solid var(--border); border-radius: 8px; background: var(--bg); padding: 10px; min-width: 150px; }
+  .cp .ch { font-size: 30px; line-height: 1.1; }
+  .cp .u { font: 600 13px var(--mono); color: var(--c-purple); }
+  .cp .bytes { font: 13px var(--mono); margin-top: 6px; }
+  .cp .pre { color: var(--muted); }
+  .cp .pay { color: var(--c-green); font-weight: 600; }
+  .cp .hexb { color: var(--c-pink); }
+
+  svg text { font-family: var(--mono); }
+  .theme-btn { position: fixed; top: 10px; right: 12px; z-index: 20; width: 34px; height: 34px; padding: 0; font-size: 16px; }
+  @media (max-width: 600px) {
+    section.card { padding: 14px; }
+    .bit { width: 30px; height: 36px; font-size: 16px; }
+    .structgrid { grid-template-columns: 44px repeat(8, minmax(28px, 1fr)); }
+  }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+<style>
+  footer.pnav { max-width: 1040px; margin: 0 auto; padding: 0 16px 48px; display: flex; flex-wrap: wrap; gap: 10px; justify-content: space-between; font-size: 14px; }
+  footer.pnav a { padding: 6px 12px; border: 1px solid var(--border); border-radius: 999px; text-decoration: none; background: var(--surface); }
+  footer.pnav a:hover { border-color: var(--accent); background: var(--accent-soft); }
+
+  .pipe { border-collapse: collapse; font: 12px var(--mono); }
+  .pipe th, .pipe td { border: 1px solid var(--border); width: 46px; height: 30px; text-align: center; padding: 0 2px; }
+  .pipe th { background: var(--surface-2); font-family: inherit; }
+  .pipe td.lbl { width: auto; text-align: left; padding: 0 8px; white-space: nowrap; }
+  .st-IF { background: var(--c-blue-soft); } .st-ID { background: var(--c-purple-soft); } .st-EX { background: var(--c-amber-soft); }
+  .st-MEM { background: var(--c-pink-soft); } .st-WB { background: var(--c-green-soft); }
+  .st-bub { background: var(--hatch), var(--bg); color: var(--muted); }
+  .st-flush { background: var(--c-red-soft); color: var(--c-red); text-decoration: line-through; }
+  .dots { display: flex; flex-wrap: wrap; gap: 3px; max-width: 520px; }
+  .dot { width: 12px; height: 12px; border-radius: 50%; }
+  .dot.ok { background: var(--c-green); } .dot.no { background: var(--c-red); }
+  .fsm { display: flex; gap: 6px; flex-wrap: wrap; }
+  .fsm div { padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; font: 12px var(--mono); background: var(--bg); }
+  .fsm div.cur { border-color: var(--accent); background: var(--accent); color: #fff; }
+  .ooo { display: grid; grid-template-columns: 170px repeat(10, 1fr); gap: 2px; font: 12px var(--mono); align-items: center; max-width: 720px; }
+  .ooo .c { height: 24px; border-radius: 3px; }
+  .ooo .busy { background: var(--accent); }
+  .ooo .wait { background: var(--hatch), var(--bg); }
+  .ooo .hd { color: var(--muted); text-align: center; font-size: 11px; }
+  .wave { display: block; width: 100%; max-width: 560px; height: 70px; margin: 10px 0; }
+  .lvl { display: grid; grid-template-columns: 110px 1fr; gap: 8px; align-items: center; margin-bottom: 6px; }
+  .lvl .slots { display: flex; gap: 4px; flex-wrap: wrap; min-height: 30px; }
+  .slot { width: 30px; height: 30px; border-radius: 5px; border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; font: 600 13px var(--mono); background: var(--bg); }
+  .slot.empty { color: var(--muted); border-style: dashed; }
+  .slot.flash { background: var(--c-green); color: #fff; border-color: var(--c-green); }
+  .ladder { display: grid; grid-template-columns: 150px 1fr 90px 150px; gap: 6px 10px; align-items: center; font-size: 13px; }
+  .ladder .fill { height: 14px; border-radius: 4px; background: var(--accent); }
+  .walk { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .walk .node { font: 12px var(--mono); padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); }
+  .walk .node.on { background: var(--c-amber); color: #fff; border-color: var(--c-amber); }
+  .mesi { display: grid; grid-template-columns: repeat(3, minmax(140px, 1fr)); gap: 10px; max-width: 620px; }
+  .mesi .box { border: 1px solid var(--border); border-radius: 8px; padding: 10px; background: var(--bg); text-align: center; }
+  .mesi .big { font-size: 28px; }
+  .S-M { color: var(--c-green); } .S-E { color: var(--c-blue); } .S-S { color: var(--c-purple); } .S-I { color: var(--c-red); }
+  .log { font: 12px var(--mono); background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px; max-height: 140px; overflow-y: auto; white-space: pre-wrap; }
+  .comp { display: grid; grid-template-columns: repeat(3, minmax(120px, 1fr)); gap: 10px; max-width: 620px; }
+  .comp .box { border: 2px solid var(--border); border-radius: 10px; padding: 12px; text-align: center; background: var(--bg); transition: box-shadow .15s, border-color .15s; }
+  .comp .box.on { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .comp .box .sub { font-size: 12px; color: var(--muted); }
+  .stack { gap: 10px; }
+  .stk { display: flex; flex-direction: column; gap: 2px; font: 12px var(--mono); max-width: 420px; }
+  .stk .fr { border: 1px solid var(--border); border-radius: 4px; padding: 5px 8px; display: flex; justify-content: space-between; gap: 8px; background: var(--bg); }
+  .stk .fr.ret { background: var(--c-amber-soft); } .stk .fr.rbp { background: var(--c-purple-soft); }
+  .stk .fr.loc { background: var(--c-blue-soft); } .stk .fr.can { background: var(--c-green-soft); }
+  .stk .fr.smash { background: var(--c-red-soft); border-color: var(--c-red); color: var(--c-red); }
+  .stk .ptr { color: var(--accent); font-weight: 700; }
+  .regs { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 6px; }
+  .regs button { font-family: var(--mono); text-align: left; }
+  .regs button.sel { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent); }
+  .lanes { display: grid; grid-template-columns: 60px repeat(8, 1fr); gap: 3px; font: 12px var(--mono); max-width: 520px; }
+  .lanes div { height: 26px; display: flex; align-items: center; justify-content: center; border: 1px solid var(--border); border-radius: 4px; background: var(--bg); }
+  .lanes .hd { border: 0; background: none; color: var(--muted); justify-content: flex-start; }
+  .lanes .done { background: var(--c-green-soft); border-color: var(--c-green); }
+  .rings svg text { font-family: inherit; }
+  .resline { font-weight: 600; margin-top: 8px; min-height: 1.5em; }
+</style>
+</head>
+<body>
+<button class="theme-btn" id="themeBtn" type="button" aria-label="Toggle dark mode"></button>
+<header class="top">
+  <a class="backlink" href="../#2-cpu-fundamentals">← Back to the notes: Part 2</a>
+  <h1>CPU Fundamentals, Visualized</h1>
+  <p>Clock, pipeline, caches, coherence, privilege and the call stack. Every widget is a small, honest simulation; scaled-down ones say so.</p>
+</header>
+
+<nav class="chips" aria-label="Sections"><div class="inner" id="chips"></div></nav>
+
+<main>
+
+<section class="card" id="s2-1" data-title="2.1 Clock">
+  <h2><span class="num">2.1</span>Clock Cycle and Frequency Scaling</h2>
+  <p class="lead">Every tick of the clock moves the CPU one step. Drag the frequency and watch the cycle time change. Power grows roughly with frequency × voltage², which is why CPUs constantly change both.</p>
+  <div class="demo">
+    <label class="inline">frequency <input type="range" id="ghz" min="8" max="55" value="35"> <b class="mono" id="ghzV"></b></label>
+    <svg class="wave" id="wave" viewBox="0 0 560 70" preserveAspectRatio="none" role="img" aria-label="clock signal"></svg>
+    <div class="row" id="clkStats"></div>
+    <div class="row" style="margin-top:10px">
+      <button type="button" id="idleBtn">Make the core idle</button>
+      <span id="idleOut" class="hint"></span>
+    </div>
+    <p class="hint" style="margin:8px 0 0">Power numbers are illustrative: real voltage/frequency curves differ per chip.</p>
+  </div>
+  <div class="connect">Connection: when nothing is runnable the scheduler runs the idle task (PID 0, 4.5), which puts the core into a C-state.</div>
+</section>
+
+<section class="card" id="s2-2" data-title="2.2 Pipeline">
+  <h2><span class="num">2.2</span>Pipelining, Branch Prediction, Out-of-Order</h2>
+  <p class="lead">Like a laundry: while one load dries, the next washes. Each instruction still takes 5 stages, but one can finish every cycle, until a dependency or a wrong guess gets in the way.</p>
+  <div class="demo">
+    <h3>5-stage pipeline</h3>
+    <div class="row">
+      <button type="button" id="pIdeal" class="primary">Ideal</button>
+      <button type="button" id="pStall">Load-use stall</button>
+      <button type="button" id="pBranch">Branch mispredict</button>
+      <button type="button" id="pPlay">▶ Play</button>
+    </div>
+    <div style="overflow-x:auto; margin-top:10px"><table class="pipe" id="pipe"></table></div>
+    <p id="pipeNote" class="hint" style="margin:8px 0 0"></p>
+    <div class="legend" style="margin-top:6px"><span style="--sw: var(--c-blue-soft)">IF fetch</span><span style="--sw: var(--c-purple-soft)">ID decode</span><span style="--sw: var(--c-amber-soft)">EX execute</span><span style="--sw: var(--c-pink-soft)">MEM</span><span style="--sw: var(--c-green-soft)">WB write back</span><span style="--sw: var(--c-red-soft)">flushed</span></div>
+  </div>
+  <div class="demo">
+    <h3>Branch predictor: <code>if (data[i] &gt;= 128) sum += data[i];</code></h3>
+    <p class="hint" style="margin:0 0 8px">A 2-bit saturating counter (a classic textbook predictor; real ones are far more elaborate) guesses each branch from its recent history.</p>
+    <div class="row">
+      <button type="button" id="bpRandom" class="primary">Random data</button>
+      <button type="button" id="bpSorted">Sorted data</button>
+      <button type="button" id="bpRun">▶ Run 256 iterations</button>
+    </div>
+    <div class="fsm" id="bpFsm" style="margin-top:10px"></div>
+    <div class="dots" id="bpDots" style="margin-top:10px"></div>
+    <div class="row" id="bpStats" style="margin-top:10px"></div>
+  </div>
+  <div class="demo">
+    <h3>Out-of-order execution</h3>
+    <pre class="mono" style="margin:0 0 8px; font-size:13px">1: load r1, [x]     ; cache miss (scaled: 6 cycles)
+2: add  r2, r1, 1   ; needs r1
+3: mul  r3, r4, r5  ; independent
+4: add  r6, r3, 7   ; needs r3 only</pre>
+    <div class="row"><button type="button" id="oooIn" class="primary">In order</button><button type="button" id="oooOut">Out of order</button></div>
+    <div class="ooo" id="ooo" style="margin-top:10px"></div>
+    <p class="hint" id="oooNote" style="margin:8px 0 0"></p>
+  </div>
+  <div class="connect">Connection: speculation leaves traces in the cache. That side channel is Spectre and Meltdown, fixed partly by KPTI (3.3).</div>
+</section>
+
+<section class="card" id="s2-3" data-title="2.3 Units">
+  <h2><span class="num">2.3</span>Core Functional Units and Registers</h2>
+  <p class="lead">Registers hold the "machine state" of a running task. SIMD units do the same operation on many values at once.</p>
+  <div class="demo">
+    <h3>Click a register</h3>
+    <div class="regs" id="regs"></div>
+    <p id="regOut" style="margin:10px 0 0"></p>
+  </div>
+  <div class="demo">
+    <h3>Scalar vs SIMD: add two arrays of 8 numbers</h3>
+    <div class="row"><button type="button" id="simdScalar" class="primary">▶ Scalar (one at a time)</button><button type="button" id="simdVec">▶ AVX2 (8 lanes at once)</button></div>
+    <div class="lanes" id="lanes" style="margin-top:10px"></div>
+    <div class="row" style="margin-top:8px"><div class="stat"><span class="k">instructions</span><span class="v" id="simdCount">0</span></div></div>
+  </div>
+  <div class="connect">Connection: a context switch saves these registers (including big SIMD state) into the task's kernel stack / task_struct (3.5).</div>
+</section>
+
+<section class="card" id="s2-4" data-title="2.4 Caches">
+  <h2><span class="num">2.4</span>Memory Hierarchy, TLB, Coherence</h2>
+  <p class="lead">Small and fast near the core, big and slow far away. The numbers below are approximate orders of magnitude.</p>
+  <div class="demo">
+    <h3>Latency ladder (log scale) and "if one cycle were one second"</h3>
+    <div class="ladder" id="ladder"></div>
+  </div>
+  <div class="demo">
+    <h3>Click to access memory (scaled-down caches)</h3>
+    <p class="hint" style="margin:0 0 8px">Toy model: L1 holds 2 lines, L2 holds 4, L3 holds 8, each with LRU eviction. Access the same addresses again to see hits.</p>
+    <div class="row" id="memBtns"></div>
+    <div style="margin-top:10px" id="levels"></div>
+    <div class="row" style="margin-top:8px"><div class="stat"><span class="k">last access</span><span class="v" id="memLast">–</span></div><div class="stat"><span class="k">total time</span><span class="v" id="memTotal">0 ns</span></div><button type="button" id="memReset">Reset</button></div>
+  </div>
+  <div class="demo">
+    <h3>TLB: translation cache</h3>
+    <p class="hint" style="margin:0 0 8px">Toy TLB with 4 entries. A miss means a 4-level page walk in RAM before the real access can happen.</p>
+    <div class="row" id="tlbBtns"></div>
+    <div class="walk" id="walk" style="margin-top:10px"></div>
+    <div class="lvl" style="margin-top:10px"><b>TLB</b><div class="slots" id="tlbSlots"></div></div>
+    <div class="row"><div class="stat"><span class="k">hits</span><span class="v ok" id="tlbHit">0</span></div><div class="stat"><span class="k">misses (page walks)</span><span class="v bad" id="tlbMiss">0</span></div></div>
+  </div>
+  <div class="demo">
+    <h3>MESI: one cache line, two cores</h3>
+    <div class="row">
+      <button type="button" data-mesi="0R">Core 0 read</button><button type="button" data-mesi="0W">Core 0 write</button>
+      <button type="button" data-mesi="1R">Core 1 read</button><button type="button" data-mesi="1W">Core 1 write</button>
+      <button type="button" id="mesiReset">Reset</button>
+    </div>
+    <div class="mesi" style="margin-top:10px">
+      <div class="box"><div class="hint">Core 0 cache</div><div class="big" id="m0">I</div><div class="hint" id="m0d"></div></div>
+      <div class="box"><div class="hint">Core 1 cache</div><div class="big" id="m1">I</div><div class="hint" id="m1d"></div></div>
+      <div class="box"><div class="hint">RAM copy</div><div class="big" id="mram" style="font-size:20px">up to date</div></div>
+    </div>
+    <div class="log" id="mesiLog" style="margin-top:10px"></div>
+  </div>
+  <div class="demo">
+    <h3>Write-through vs write-back</h3>
+    <div class="row">
+      <button type="button" id="wpThrough">Write-through</button><button type="button" id="wpBack" class="primary">Write-back</button>
+      <button type="button" id="wpWrite">Write to the line</button><button type="button" id="wpEvict">Evict the line</button>
+    </div>
+    <div class="row" style="margin-top:10px" id="wpStats"></div>
+    <p class="hint" style="margin:8px 0 0">Same idea one layer up: the page cache is a write-back cache of the disk (6.7), and fsync() is "evict now".</p>
+  </div>
+  <div class="connect">Connection: MESI is why locks and atomics work across cores (5.3), and why false sharing hurts (1.8).</div>
+</section>
+
+<section class="card" id="s2-5" data-title="2.5 DMA">
+  <h2><span class="num">2.5</span>Buses and DMA</h2>
+  <p class="lead">Without DMA the CPU would copy every byte from a device itself. With DMA the device writes into RAM directly and only interrupts the CPU at the end.</p>
+  <div class="demo">
+    <div class="comp">
+      <div class="box" id="dCpu"><b>CPU</b><div class="sub" id="dCpuS">running tasks</div></div>
+      <div class="box" id="dRam"><b>RAM</b><div class="sub" id="dRamS">buffer: empty</div></div>
+      <div class="box" id="dDev"><b>NVMe SSD</b><div class="sub" id="dDevS">idle</div></div>
+    </div>
+    <div class="row" style="margin-top:10px"><button type="button" id="dmaNext" class="primary">Next step</button><button type="button" id="dmaReset">Reset</button><span class="hint" id="dmaStepN"></span></div>
+    <p id="dmaText" style="margin:10px 0 0; font-weight:600"></p>
+  </div>
+  <div class="connect">Connection: this is how a read() from disk completes in Part 11: the task sleeps in D state, DMA fills a page-cache page, an interrupt wakes it.</div>
+</section>
+
+<section class="card" id="s2-6" data-title="2.6 Rings">
+  <h2><span class="num">2.6</span>CPU Privilege Levels (Rings)</h2>
+  <p class="lead">The CPU itself enforces who may do what. Pick a mode, then try instructions. The only doors from Ring 3 into Ring 0 are ones the kernel set up in advance.</p>
+  <div class="demo">
+    <div class="row" style="align-items:center; gap:24px">
+      <svg id="rings" viewBox="0 0 220 220" width="220" height="220" role="img" aria-label="privilege rings"></svg>
+      <div class="stack" style="flex:1; min-width:260px">
+        <div class="row"><button type="button" id="ring3" class="primary">Ring 3 (user)</button><button type="button" id="ring0">Ring 0 (kernel)</button></div>
+        <div class="mono" id="cplOut"></div>
+        <div class="row" id="instrBtns" style="gap:6px"></div>
+        <div class="resline" id="ringRes"></div>
+      </div>
+    </div>
+  </div>
+  <div class="connect">Connection: containers are not VMs: they run in Ring 3 on the same kernel (Part 10). VMs add VMX root/non-root on top of rings.</div>
+</section>
+
+<section class="card" id="s2-7" data-title="2.7 Call stack">
+  <h2><span class="num">2.7</span>Function Calls and the Stack</h2>
+  <p class="lead"><code>call</code> pushes a return address and jumps; <code>ret</code> pops it. Each call gets a frame. The stack grows down.</p>
+  <div class="demo">
+    <h3>Build a call stack</h3>
+    <div class="row"><button type="button" id="callBtn" class="primary">call add3(1, 2, 3)</button><button type="button" id="callNested">call another function</button><button type="button" id="retBtn">ret</button></div>
+    <div class="row" style="align-items:flex-start; gap:24px; margin-top:10px">
+      <div class="stk" id="stk" style="flex:1"></div>
+      <div class="stack" style="min-width:200px"><div class="mono" id="regView" style="font-size:13px"></div><p class="hint" id="callNote" style="margin:0"></p></div>
+    </div>
+  </div>
+  <div class="demo">
+    <h3>Stack buffer overflow: <code>char buf[16]; strcpy(buf, name);</code></h3>
+    <div class="row">
+      <label class="inline">name length <input type="range" id="ovLen" min="0" max="48" value="10"> <b class="mono" id="ovLenV"></b></label>
+      <label class="inline"><input type="checkbox" id="ovCanary" checked> stack canary (-fstack-protector)</label>
+    </div>
+    <div class="stk" id="ovStk" style="margin-top:10px"></div>
+    <div class="resline" id="ovRes"></div>
+    <p class="hint" style="margin:6px 0 0">Simplified layout (no other locals or alignment padding). Writes go up toward the return address.</p>
+  </div>
+  <div class="connect">Connection: NX (6.3) and ASLR (4.4) are the other defenses; every thread also has a separate kernel stack used during syscalls (3.3).</div>
+</section>
+
+</main>
+
+<footer class="pnav">
+  <a href="part1-data-representation.html">← Part 1: Data Representation</a>
+  <a href="index.html">All visuals</a>
+  <a href="part3-os.html">Part 3: OS Fundamentals →</a>
+</footer>
+<script>
+(function () {
+  'use strict';
+
+  const $ = (id) => document.getElementById(id);
+  const h = (tag, props, ...kids) => {
+    const n = document.createElement(tag);
+    if (props) for (const k in props) {
+      if (k === 'class') n.className = props[k];
+      else if (k === 'style') n.style.cssText = props[k];
+      else if (k === 'html') n.innerHTML = props[k];
+      else if (k.startsWith('on')) n.addEventListener(k.slice(2), props[k]);
+      else n.setAttribute(k, props[k]);
+    }
+    for (const kid of kids.flat()) if (kid != null) n.append(kid);
+    return n;
+  };
+  const hex = (n, w) => n.toString(16).toUpperCase().padStart(w, '0');
+  const bin = (n, w) => n.toString(2).padStart(w, '0');
+  const store = {
+    get(k) { try { return localStorage.getItem(k); } catch (e) { return null; } },
+    set(k, v) { try { localStorage.setItem(k, v); } catch (e) {} },
+  };
+
+  /* theme */
+  const themeBtn = $('themeBtn');
+  function applyTheme(t) {
+    document.documentElement.setAttribute('data-theme', t);
+    themeBtn.innerHTML = t === 'dark' ? '&#9728;' : '&#9790;';
+    themeBtn.title = t === 'dark' ? 'Switch to light mode' : 'Switch to dark mode';
+  }
+  applyTheme(document.documentElement.getAttribute('data-theme'));
+  themeBtn.addEventListener('click', () => {
+    const t = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+    store.set('theme', t);
+    applyTheme(t);
+  });
+
+  /* section chips */
+  const chips = $('chips');
+  const sections = [...document.querySelectorAll('section.card')];
+  sections.forEach((s) => chips.append(h('a', { href: '#' + s.id }, s.dataset.title)));
+  const chipLinks = [...chips.children];
+  const io = new IntersectionObserver((entries) => {
+    entries.forEach((e) => {
+      if (!e.isIntersecting) return;
+      chipLinks.forEach((a) => a.classList.toggle('active', a.getAttribute('href') === '#' + e.target.id));
+      const act = chips.querySelector('.active');
+      if (act) act.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    });
+  }, { rootMargin: '-45% 0px -50% 0px' });
+  sections.forEach((s) => io.observe(s));
+
+/* ---------- 2.1 clock ---------- */
+  let idle = false;
+  function drawClock() {
+    const ghz = +$('ghz').value / 10;
+    $('ghzV').textContent = ghz.toFixed(1) + ' GHz';
+    const svg = $('wave');
+    const periods = Math.max(2, Math.round(ghz * 3));
+    const w = 560 / periods;
+    let d = 'M0 55';
+    for (let i = 0; i < periods; i++) { const x = i * w; d += ` L${x} 15 L${x + w / 2} 15 L${x + w / 2} 55 L${x + w} 55`; }
+    svg.innerHTML = idle
+      ? '<line x1="0" y1="55" x2="560" y2="55" stroke="var(--muted)" stroke-width="2" stroke-dasharray="6 4"/><text x="280" y="38" text-anchor="middle" fill="var(--muted)" font-size="14">clock stopped (C-state)</text>'
+      : `<path d="${d}" fill="none" stroke="var(--accent)" stroke-width="2"/>`;
+    const ns = 1 / ghz;
+    const volt = 0.7 + 0.12 * ghz;               // illustrative V/f curve
+    const power = ghz * volt * volt;
+    const base = 1.0 * Math.pow(0.7 + 0.12, 2);
+    const st = $('clkStats');
+    st.innerHTML = '';
+    st.append(
+      h('div', { class: 'stat' }, h('span', { class: 'k' }, 'one cycle'), h('span', { class: 'v' }, idle ? '–' : ns.toFixed(3) + ' ns')),
+      h('div', { class: 'stat' }, h('span', { class: 'k' }, 'cycles per microsecond'), h('span', { class: 'v' }, idle ? '0' : Math.round(ghz * 1000).toLocaleString())),
+      h('div', { class: 'stat' }, h('span', { class: 'k' }, 'power vs 1 GHz (illustrative)'), h('span', { class: 'v' }, idle ? '≈ 0' : (power / base).toFixed(1) + '×')));
+  }
+  $('ghz').addEventListener('input', drawClock);
+  $('idleBtn').addEventListener('click', () => {
+    idle = !idle;
+    $('idleBtn').textContent = idle ? 'Wake the core (timer interrupt)' : 'Make the core idle';
+    $('idleOut').textContent = idle ? 'Idle task runs hlt/mwait → clock stops → C-state saves power.' : '';
+    drawClock();
+  });
+  drawClock();
+
+  /* ---------- 2.2 pipeline ---------- */
+  const STG = ['IF', 'ID', 'EX', 'MEM', 'WB'];
+  const PIPES = {
+    ideal: {
+      note: '5 instructions, no hazards: after the pipeline fills, one instruction completes every cycle (9 cycles total instead of 25).',
+      rows: [['add r1,r2,r3', 0], ['sub r4,r5,r6', 1], ['and r7,r8,r9', 2], ['or  r1,r2,r3', 3], ['xor r4,r5,r6', 4]].map(([l, s]) => [l, s, STG]),
+    },
+    stall: {
+      note: 'The add needs r1 from the load, which is only available after MEM. A bubble (stall) delays it and everything behind it by one cycle (forwarding assumed).',
+      rows: [['load r1,[x]', 0, STG], ['add r2,r1,1', 1, ['IF', 'ID', 'bub', 'EX', 'MEM', 'WB']], ['sub r4,r5,r6', 2, ['IF', 'bub', 'ID', 'EX', 'MEM', 'WB']], ['or  r7,r8,r9', 4, STG]],
+    },
+    branch: {
+      note: 'The branch is resolved in EX (cycle 3). The CPU guessed "not taken" and fetched 2 wrong-path instructions; they are flushed and fetching restarts at the target: 2 cycles lost.',
+      rows: [['beq r1,r2,L', 0, STG], ['add (wrong path)', 1, ['IF', 'ID', 'flush']], ['sub (wrong path)', 2, ['IF', 'flush']], ['L: mul r3,r4,r5', 3, STG], ['L+1: or r6,r7,r8', 4, STG]],
+    },
+  };
+  let pipeKind = 'ideal', pipeShown = 99, pipeTimer = null;
+  function drawPipe() {
+    const P = PIPES[pipeKind];
+    const ncyc = Math.max(...P.rows.map(([, s, st]) => s + st.length));
+    const t = $('pipe');
+    t.innerHTML = '';
+    const hr = h('tr', null, h('th', null, 'instruction \\ cycle'));
+    for (let c = 1; c <= ncyc; c++) hr.append(h('th', null, String(c)));
+    t.append(hr);
+    P.rows.forEach(([label, start, st]) => {
+      const tr = h('tr', null, h('td', { class: 'lbl' }, label));
+      for (let c = 0; c < ncyc; c++) {
+        const k = c - start;
+        let txt = '', cls = '';
+        if (k >= 0 && k < st.length && c < pipeShown) {
+          const s = st[k];
+          if (s === 'bub') { txt = 'stall'; cls = 'st-bub'; }
+          else if (s === 'flush') { txt = 'flush'; cls = 'st-flush'; }
+          else { txt = s; cls = 'st-' + s; }
+        }
+        tr.append(h('td', { class: cls }, txt));
+      }
+      t.append(tr);
+    });
+    $('pipeNote').textContent = P.note;
+  }
+  function setPipe(kind) {
+    pipeKind = kind; clearInterval(pipeTimer); pipeShown = 99;
+    ['pIdeal', 'pStall', 'pBranch'].forEach((id, i) => $(id).classList.toggle('primary', ['ideal', 'stall', 'branch'][i] === kind));
+    drawPipe();
+  }
+  $('pIdeal').addEventListener('click', () => setPipe('ideal'));
+  $('pStall').addEventListener('click', () => setPipe('stall'));
+  $('pBranch').addEventListener('click', () => setPipe('branch'));
+  $('pPlay').addEventListener('click', () => {
+    clearInterval(pipeTimer); pipeShown = 0; drawPipe();
+    pipeTimer = setInterval(() => { pipeShown++; drawPipe(); if (pipeShown > 12) clearInterval(pipeTimer); }, 550);
+  });
+  setPipe('ideal');
+
+  // branch predictor
+  const FSM = ['strongly not-taken', 'weakly not-taken', 'weakly taken', 'strongly taken'];
+  let bpSorted = false, bpTimer = null;
+  function lcg(seed) { let s = seed; return () => (s = (s * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff; }
+  function drawFsm(state) {
+    const f = $('bpFsm');
+    f.innerHTML = '';
+    FSM.forEach((n, i) => f.append(h('div', { class: i === state ? 'cur' : '' }, `${i}: ${n}`)));
+  }
+  function runBp() {
+    clearInterval(bpTimer);
+    const rnd = lcg(42);
+    let data = Array.from({ length: 256 }, () => Math.floor(rnd() * 256));
+    if (bpSorted) data.sort((a, b) => a - b);
+    let state = 1, ok = 0, n = 0;
+    const dots = $('bpDots');
+    dots.innerHTML = '';
+    bpTimer = setInterval(() => {
+      for (let k = 0; k < 4 && n < 256; k++, n++) {
+        const taken = data[n] >= 128;
+        const guess = state >= 2;
+        const right = guess === taken;
+        if (right) ok++;
+        state = taken ? Math.min(3, state + 1) : Math.max(0, state - 1);
+        dots.append(h('div', { class: 'dot ' + (right ? 'ok' : 'no'), title: `data=${data[n]} ${taken ? 'taken' : 'not taken'}` }));
+      }
+      drawFsm(state);
+      const st = $('bpStats');
+      st.innerHTML = '';
+      st.append(
+        h('div', { class: 'stat' }, h('span', { class: 'k' }, 'branches'), h('span', { class: 'v' }, String(n))),
+        h('div', { class: 'stat' }, h('span', { class: 'k' }, 'correct guesses'), h('span', { class: 'v ok' }, String(ok))),
+        h('div', { class: 'stat' }, h('span', { class: 'k' }, 'accuracy'), h('span', { class: 'v' }, (n ? (100 * ok / n).toFixed(0) : 0) + '%')),
+        h('div', { class: 'stat' }, h('span', { class: 'k' }, 'mispredicts × ~15 cycles'), h('span', { class: 'v bad' }, String((n - ok) * 15))));
+      if (n >= 256) clearInterval(bpTimer);
+    }, 40);
+  }
+  $('bpRandom').addEventListener('click', () => { bpSorted = false; $('bpRandom').classList.add('primary'); $('bpSorted').classList.remove('primary'); runBp(); });
+  $('bpSorted').addEventListener('click', () => { bpSorted = true; $('bpSorted').classList.add('primary'); $('bpRandom').classList.remove('primary'); runBp(); });
+  $('bpRun').addEventListener('click', runBp);
+  drawFsm(1);
+
+  // out of order
+  function drawOoo(out) {
+    $('oooIn').classList.toggle('primary', !out); $('oooOut').classList.toggle('primary', out);
+    // [label, waitStart, waitEnd, busyStart, busyEnd]  (cycles 0..9)
+    const rows = out
+      ? [['1: load (miss)', 0, 0, 0, 6], ['2: add r2,r1,1', 1, 6, 6, 7], ['3: mul r3,r4,r5', 0, 0, 1, 3], ['4: add r6,r3,7', 1, 3, 3, 4]]
+      : [['1: load (miss)', 0, 0, 0, 6], ['2: add r2,r1,1', 1, 6, 6, 7], ['3: mul r3,r4,r5', 1, 7, 7, 9], ['4: add r6,r3,7', 1, 9, 9, 10]];
+    const g = $('ooo');
+    g.innerHTML = '';
+    g.append(h('div'));
+    for (let c = 1; c <= 10; c++) g.append(h('div', { class: 'hd' }, String(c)));
+    rows.forEach(([l, ws, we, bs, be]) => {
+      g.append(h('div', null, l));
+      for (let c = 0; c < 10; c++) g.append(h('div', { class: 'c ' + (c >= bs && c < be ? 'busy' : c >= ws && c < we ? 'wait' : '') }));
+    });
+    $('oooNote').textContent = out
+      ? 'Out of order: 3 and 4 run while the load waits. Everything is done after 7 cycles. Results still retire in program order (reorder buffer), so exceptions stay precise.'
+      : 'In order: everything queues behind the slow load. Done after 10 cycles. (Scaled-down timings.)';
+    g.append(h('div', { class: 'hint', style: 'grid-column: 1 / -1; margin-top:4px' }, '■ executing   ▨ waiting'));
+  }
+  $('oooIn').addEventListener('click', () => drawOoo(false));
+  $('oooOut').addEventListener('click', () => drawOoo(true));
+  drawOoo(false);
+
+  /* ---------- 2.3 registers + SIMD ---------- */
+  const REGS = [
+    ['rax', 'General purpose. Holds a function’s return value, and the syscall number before syscall (3.3).'],
+    ['rdi / rsi / rdx', 'First three function (and syscall) arguments in the x86-64 ABI (2.7).'],
+    ['rip', 'Instruction pointer: address of the next instruction. Saved on context switch; set to the handler on signal delivery (8.1).'],
+    ['rsp', 'Stack pointer: top of the current stack. Grows down (2.7).'],
+    ['rbp', 'Frame pointer: base of the current stack frame; debuggers walk the chain for backtraces.'],
+    ['rflags', 'Status flags: zero, carry, overflow, interrupt-enable. On x86 the privilege level is NOT here (it’s in CS).'],
+    ['cs', 'Code segment selector: its low 2 bits are the Current Privilege Level, 00 = Ring 0, 11 = Ring 3 (2.6).'],
+    ['cr3', 'Kernel only: physical address of the current page table. Changing CR3 switches the address space (6.3).'],
+    ['ymm0–15', 'AVX2 vector registers, 256 bits each: 8 × 32-bit values per instruction.'],
+  ];
+  const regBtns = [];
+  REGS.forEach(([n, d], i) => {
+    const b = h('button', { type: 'button' }, n);
+    b.addEventListener('click', () => { regBtns.forEach((x, j) => x.classList.toggle('sel', i === j)); $('regOut').innerHTML = ''; $('regOut').append(h('b', { class: 'mono' }, n + ': '), d); });
+    regBtns.push(b);
+    $('regs').append(b);
+  });
+  regBtns[2].click();
+
+  const A = [3, 1, 4, 1, 5, 9, 2, 6], B = [2, 7, 1, 8, 2, 8, 1, 8];
+  let simdTimer = null;
+  function drawLanes(done) {
+    const L = $('lanes');
+    L.innerHTML = '';
+    L.append(h('div', { class: 'hd' }, 'a'), ...A.map((x) => h('div', null, String(x))));
+    L.append(h('div', { class: 'hd' }, 'b'), ...B.map((x) => h('div', null, String(x))));
+    L.append(h('div', { class: 'hd' }, 'a+b'), ...A.map((x, i) => h('div', { class: done[i] ? 'done' : '' }, done[i] ? String(x + B[i]) : '')));
+  }
+  function runSimd(vec) {
+    clearInterval(simdTimer);
+    $('simdScalar').classList.toggle('primary', !vec); $('simdVec').classList.toggle('primary', vec);
+    const done = Array(8).fill(false);
+    let count = 0;
+    drawLanes(done); $('simdCount').textContent = 0;
+    simdTimer = setInterval(() => {
+      if (vec) { done.fill(true); count = 1; }
+      else { done[count] = true; count++; }
+      drawLanes(done); $('simdCount').textContent = count;
+      if (vec || count >= 8) clearInterval(simdTimer);
+    }, 450);
+  }
+  $('simdScalar').addEventListener('click', () => runSimd(false));
+  $('simdVec').addEventListener('click', () => runSimd(true));
+  drawLanes(Array(8).fill(false));
+
+  /* ---------- 2.4 ladder ---------- */
+  const LAT = [['CPU cycle', 0.3], ['L1 hit', 1], ['L2 hit', 4], ['L3 hit', 15], ['RAM (DRAM)', 100], ['syscall', 200], ['context switch', 3000], ['NVMe read', 50000], ['HDD seek', 7e6], ['RTT across the ocean', 1.2e8]];
+  const human = (sec) => {
+    if (sec < 60) return sec.toFixed(0) + ' s';
+    if (sec < 3600) return (sec / 60).toFixed(0) + ' min';
+    if (sec < 86400) return (sec / 3600).toFixed(1) + ' hours';
+    if (sec < 86400 * 365) return (sec / 86400).toFixed(0) + ' days';
+    return (sec / 86400 / 365).toFixed(0) + ' years';
+  };
+  const fmtNs = (ns) => ns < 1000 ? ns + ' ns' : ns < 1e6 ? (ns / 1000).toFixed(0) + ' µs' : (ns / 1e6).toFixed(0) + ' ms';
+  const maxLog = Math.log10(1.2e8 / 0.3);
+  LAT.forEach(([n, ns]) => {
+    const w = 3 + 97 * Math.log10(ns / 0.3) / maxLog;
+    $('ladder').append(h('span', null, n), h('div', null, h('div', { class: 'fill', style: `width:${w}%` })), h('b', { class: 'mono' }, fmtNs(ns)), h('span', { class: 'hint' }, '≈ ' + human(ns / 0.3)));
+  });
+
+  // cache sim
+  const CAP = [['L1', 2, 1], ['L2', 4, 4], ['L3', 8, 15], ['RAM', Infinity, 100]];
+  let caches = [[], [], []], total = 0;
+  function drawLevels(flash) {
+    const box = $('levels');
+    box.innerHTML = '';
+    CAP.forEach(([n, cap, ns], i) => {
+      const slots = h('div', { class: 'slots' });
+      if (i < 3) for (let k = 0; k < cap; k++) {
+        const v = caches[i][k];
+        slots.append(h('div', { class: 'slot' + (v ? '' : ' empty') + (flash && flash[0] === i && v === flash[1] ? ' flash' : '') }, v || '·'));
+      } else slots.append(h('span', { class: 'hint' }, 'everything (always a hit, but slow)'));
+      box.append(h('div', { class: 'lvl' }, h('b', null, `${n} · ${ns} ns`), slots));
+    });
+  }
+  'ABCDEFGHIJ'.split('').forEach((ch) => $('memBtns').append(h('button', { type: 'button', onclick: () => access(ch) }, ch)));
+  function access(ch) {
+    let lvl = caches.findIndex((c) => c.includes(ch));
+    if (lvl === -1) lvl = 3;
+    const ns = CAP[lvl][2];
+    total += ns;
+    for (let i = 0; i < 3; i++) {                // inclusive: bring into every level, most recent last
+      const c = caches[i], p = c.indexOf(ch);
+      if (p !== -1) c.splice(p, 1);
+      else if (c.length >= CAP[i][1]) c.shift();
+      c.push(ch);
+    }
+    $('memLast').textContent = `${ch}: ${CAP[lvl][0]} ${lvl === 0 ? 'hit' : lvl === 3 ? 'miss everywhere' : 'hit'} (${ns} ns)`;
+    $('memTotal').textContent = total + ' ns';
+    drawLevels([0, ch]);
+  }
+  $('memReset').addEventListener('click', () => { caches = [[], [], []]; total = 0; $('memLast').textContent = '–'; $('memTotal').textContent = '0 ns'; drawLevels(); });
+  drawLevels();
+
+  // TLB
+  let tlb = [], tlbHits = 0, tlbMiss = 0, walkTimer = null;
+  const WALK = ['VA', 'CR3', 'PGD', 'PUD', 'PMD', 'PTE', 'frame'];
+  function drawWalk(on) {
+    const w = $('walk');
+    w.innerHTML = '';
+    WALK.forEach((n, i) => { if (i) w.append(h('span', { class: 'hint' }, '→')); w.append(h('span', { class: 'node' + (on === i ? ' on' : '') }, n)); });
+  }
+  function drawTlb(flashPage) {
+    const s = $('tlbSlots');
+    s.innerHTML = '';
+    for (let i = 0; i < 4; i++) { const v = tlb[i]; s.append(h('div', { class: 'slot' + (v == null ? ' empty' : '') + (v === flashPage ? ' flash' : ''), style: 'width:auto; padding:0 8px' }, v == null ? '·' : `p${v}→f${(v * 7 + 3) % 32}`)); }
+    $('tlbHit').textContent = tlbHits; $('tlbMiss').textContent = tlbMiss;
+  }
+  for (let p = 0; p < 7; p++) $('tlbBtns').append(h('button', { type: 'button', onclick: () => tlbAccess(p) }, 'page ' + p));
+  function tlbAccess(p) {
+    clearInterval(walkTimer);
+    const i = tlb.indexOf(p);
+    if (i !== -1) { tlb.splice(i, 1); tlb.push(p); tlbHits++; drawWalk(-1); drawTlb(p); return; }
+    tlbMiss++;
+    let k = 0;
+    walkTimer = setInterval(() => {
+      drawWalk(k++);
+      if (k >= WALK.length) { clearInterval(walkTimer); if (tlb.length >= 4) tlb.shift(); tlb.push(p); drawTlb(p); }
+    }, 220);
+    drawTlb();
+  }
+  drawWalk(-1); drawTlb();
+
+  // MESI
+  let ms = ['I', 'I'], ramFresh = true;
+  const MDESC = { M: 'Modified (dirty, only copy)', E: 'Exclusive (clean, only copy)', S: 'Shared (clean)', I: 'Invalid' };
+  function mlog(t) { const l = $('mesiLog'); l.textContent = t + '\n' + l.textContent; }
+  function drawMesi() {
+    [0, 1].forEach((c) => { const e = $('m' + c); e.textContent = ms[c]; e.className = 'big S-' + ms[c]; $('m' + c + 'd').textContent = MDESC[ms[c]]; });
+    $('mram').textContent = ramFresh ? 'up to date' : 'stale';
+    $('mram').className = 'big ' + (ramFresh ? 'ok' : 'warn');
+  }
+  function mesi(op) {
+    const c = +op[0], o = 1 - c;
+    if (op[1] === 'R') {
+      if (ms[c] !== 'I') mlog(`core ${c} read: hit in ${ms[c]}, no bus traffic`);
+      else if (ms[o] === 'M') { ms[o] = 'S'; ms[c] = 'S'; ramFresh = true; mlog(`core ${c} read: miss; core ${o} has it Modified → supplies data, writes back; both Shared`); }
+      else if (ms[o] === 'E' || ms[o] === 'S') { ms[o] = 'S'; ms[c] = 'S'; mlog(`core ${c} read: miss; core ${o} also has it → both Shared`); }
+      else { ms[c] = 'E'; mlog(`core ${c} read: miss; nobody else has it → Exclusive`); }
+    } else {
+      if (ms[c] === 'M') mlog(`core ${c} write: already Modified, no bus traffic`);
+      else if (ms[c] === 'E') { ms[c] = 'M'; mlog(`core ${c} write: Exclusive → Modified silently (no one to tell)`); }
+      else { if (ms[o] !== 'I') mlog(`core ${c} write: broadcast "invalidate" → core ${o} → Invalid`); else mlog(`core ${c} write: read-for-ownership from RAM`); ms[o] = 'I'; ms[c] = 'M'; }
+      ramFresh = false;
+    }
+    drawMesi();
+  }
+  document.querySelectorAll('[data-mesi]').forEach((b) => b.addEventListener('click', () => mesi(b.dataset.mesi)));
+  $('mesiReset').addEventListener('click', () => { ms = ['I', 'I']; ramFresh = true; $('mesiLog').textContent = ''; drawMesi(); });
+  drawMesi();
+
+  // write policy
+  let wpBack = true, wpDirty = false, wpCache = 0, wpRam = 0, wpWrites = 0;
+  function drawWp() {
+    $('wpBack').classList.toggle('primary', wpBack); $('wpThrough').classList.toggle('primary', !wpBack);
+    const st = $('wpStats');
+    st.innerHTML = '';
+    st.append(
+      h('div', { class: 'stat' }, h('span', { class: 'k' }, 'CPU writes'), h('span', { class: 'v' }, String(wpWrites))),
+      h('div', { class: 'stat' }, h('span', { class: 'k' }, 'writes to RAM'), h('span', { class: 'v ' + (wpRam > 1 ? 'bad' : 'ok') }, String(wpRam))),
+      h('div', { class: 'stat' }, h('span', { class: 'k' }, 'line'), h('span', { class: 'v ' + (wpDirty ? 'warn' : '') }, wpCache ? (wpDirty ? 'cached, DIRTY' : 'cached, clean') : 'not cached')),
+      h('div', { class: 'stat' }, h('span', { class: 'k' }, 'RAM copy'), h('span', { class: 'v ' + (wpDirty ? 'warn' : 'ok') }, wpDirty ? 'stale' : 'up to date')));
+  }
+  function wpReset(back) { wpBack = back; wpDirty = false; wpCache = 0; wpRam = 0; wpWrites = 0; drawWp(); }
+  $('wpBack').addEventListener('click', () => wpReset(true));
+  $('wpThrough').addEventListener('click', () => wpReset(false));
+  $('wpWrite').addEventListener('click', () => { wpWrites++; wpCache = 1; if (wpBack) wpDirty = true; else wpRam++; drawWp(); });
+  $('wpEvict').addEventListener('click', () => { if (wpDirty) wpRam++; wpDirty = false; wpCache = 0; drawWp(); });
+  drawWp();
+
+  /* ---------- 2.5 DMA ---------- */
+  const DMA = [
+    [['dCpu', 'dRam'], 'Driver allocates a buffer in RAM and writes its physical address to the device (MMIO).', { dCpuS: 'driver programs the device', dRamS: 'buffer: reserved', dDevS: 'got buffer address' }],
+    [['dDev', 'dRam'], 'The device transfers the data into RAM by itself. The CPU is free to run other tasks.', { dCpuS: 'running other tasks', dRamS: 'buffer: filling…', dDevS: 'DMA transfer in progress' }],
+    [['dDev', 'dCpu'], 'The device raises an INTERRUPT: "done" (3.4).', { dCpuS: 'interrupt!', dRamS: 'buffer: full', dDevS: 'raises IRQ' }],
+    [['dCpu'], 'The kernel’s interrupt handler marks the I/O complete and wakes the waiting task (3.6).', { dCpuS: 'handler wakes the reader', dRamS: 'buffer: full', dDevS: 'idle' }],
+  ];
+  let dmaStep = -1;
+  function drawDma() {
+    ['dCpu', 'dRam', 'dDev'].forEach((id) => $(id).classList.remove('on'));
+    if (dmaStep < 0) { $('dCpuS').textContent = 'running tasks'; $('dRamS').textContent = 'buffer: empty'; $('dDevS').textContent = 'idle'; $('dmaText').textContent = 'Press Next step.'; $('dmaStepN').textContent = ''; return; }
+    const [on, txt, subs] = DMA[dmaStep];
+    on.forEach((id) => $(id).classList.add('on'));
+    for (const k in subs) $(k).textContent = subs[k];
+    $('dmaText').textContent = `${dmaStep + 1}. ${txt}`;
+    $('dmaStepN').textContent = `step ${dmaStep + 1} / ${DMA.length}`;
+  }
+  $('dmaNext').addEventListener('click', () => { dmaStep = (dmaStep + 1) % DMA.length; drawDma(); });
+  $('dmaReset').addEventListener('click', () => { dmaStep = -1; drawDma(); });
+  drawDma();
+
+  /* ---------- 2.6 rings ---------- */
+  let ring = 3;
+  const NS = 'http://www.w3.org/2000/svg';
+  function drawRings() {
+    const svg = $('rings');
+    svg.innerHTML = '';
+    [[100, 3, 'Ring 3'], [74, 2, 'Ring 2'], [50, 1, 'Ring 1'], [28, 0, 'Ring 0']].forEach(([r, n, label]) => {
+      const c = document.createElementNS(NS, 'circle');
+      c.setAttribute('cx', 110); c.setAttribute('cy', 110); c.setAttribute('r', r);
+      c.setAttribute('fill', n === ring ? 'var(--accent-soft)' : (n === 1 || n === 2) ? 'var(--surface)' : 'var(--bg)');
+      c.setAttribute('stroke', n === ring ? 'var(--accent)' : 'var(--border)');
+      c.setAttribute('stroke-width', n === ring ? 3 : 1);
+      svg.append(c);
+      const t = document.createElementNS(NS, 'text');
+      t.setAttribute('x', 110); t.setAttribute('y', n === 0 ? 114 : 110 - r + 15); t.setAttribute('text-anchor', 'middle');
+      t.setAttribute('font-size', 11); t.setAttribute('fill', (n === 1 || n === 2) ? 'var(--muted)' : 'var(--text)');
+      t.textContent = n === 0 ? 'kernel' : n === 3 ? 'Ring 3: apps' : label + ' (unused)';
+      svg.append(t);
+    });
+    $('ring3').classList.toggle('primary', ring === 3); $('ring0').classList.toggle('primary', ring === 0);
+    $('cplOut').textContent = `CS selector low bits = ${ring === 3 ? '11' : '00'}  →  CPL ${ring}`;
+  }
+  const INSTR = [
+    ['add rax, 1', () => ['ok', 'Allowed in any ring.']],
+    ['read user page', () => ['ok', 'Allowed: the page-table entry has U/S = user.']],
+    ['read kernel page', () => ring === 0 ? ['ok', 'Allowed in Ring 0.'] : ['bad', 'Page fault: U/S = supervisor → SIGSEGV. (Meltdown read it speculatively anyway; KPTI fixed it.)']],
+    ['cli (disable IRQs)', () => ring === 0 ? ['ok', 'Interrupts disabled on this core.'] : ['bad', '#GP fault → SIGSEGV. User code can’t stop interrupts.']],
+    ['hlt', () => ring === 0 ? ['ok', 'Core halts until the next interrupt (idle).'] : ['bad', '#GP fault → SIGSEGV.']],
+    ['mov cr3, rax', () => ring === 0 ? ['ok', 'Address space switched (this is what a context switch does).'] : ['bad', '#GP fault → SIGSEGV. Only the kernel may change page tables.']],
+    ['syscall', () => { if (ring === 3) { ring = 0; drawRings(); return ['ok', 'Controlled door: CPU jumps to the address in MSR_LSTAR, CPL 3 → 0. (sysret brings it back.)']; } return ['warn', 'Already in the kernel; the kernel returns to user mode with sysret.']; }],
+    ['sysret', () => { if (ring === 0) { ring = 3; drawRings(); return ['ok', 'Back to user mode: CPL 0 → 3.']; } return ['bad', '#GP fault: sysret is a privileged instruction.']; }],
+  ];
+  INSTR.forEach(([n, f]) => $('instrBtns').append(h('button', { type: 'button', class: 'mono', onclick: () => { const [cls, txt] = f(); const r = $('ringRes'); r.className = 'resline ' + cls; r.textContent = `${n}: ${txt}`; } }, n)));
+  $('ring3').addEventListener('click', () => { ring = 3; drawRings(); $('ringRes').textContent = ''; });
+  $('ring0').addEventListener('click', () => { ring = 0; drawRings(); $('ringRes').textContent = ''; });
+  drawRings();
+
+  /* ---------- 2.7 stack ---------- */
+  let frames = [];
+  let addrTop = 0x7ffc0000;
+  function drawStack(note) {
+    const s = $('stk');
+    s.innerHTML = '';
+    s.append(h('div', { class: 'hint' }, 'higher addresses'));
+    s.append(h('div', { class: 'fr' }, h('span', null, "main's frame"), h('span', { class: 'hint' }, '…')));
+    let a = addrTop;
+    frames.forEach((f, i) => {
+      const last = i === frames.length - 1;
+      a -= 8; s.append(h('div', { class: 'fr ret' }, h('span', null, `return address → ${f.caller}`), h('span', { class: 'hint' }, '0x' + hex(a, 8))));
+      a -= 8; s.append(h('div', { class: 'fr rbp' }, h('span', null, `saved rbp ${last ? '← rbp' : ''}`), h('span', { class: 'hint' }, '0x' + hex(a, 8))));
+      a -= 16; s.append(h('div', { class: 'fr loc' }, h('span', null, `${f.name}: locals (${f.locals})`), h('span', { class: last ? 'ptr' : 'hint' }, last ? '← rsp' : '0x' + hex(a, 8))));
+    });
+    s.append(h('div', { class: 'hint' }, 'lower addresses ↓ (stack grows this way)'));
+    const top = frames[frames.length - 1];
+    $('regView').innerHTML = '';
+    $('regView').append(top
+      ? h('div', null, ...top.regs.map((r) => h('div', null, r)))
+      : h('div', { class: 'hint' }, 'no active call'));
+    $('callNote').textContent = note || '';
+  }
+  $('callBtn').addEventListener('click', () => {
+    if (frames.length >= 4) return drawStack('That’s enough frames for one screen. Try ret.');
+    frames.push({ name: 'add3', caller: frames.length ? frames[frames.length - 1].name : 'main', locals: 'tmp', regs: ['rdi = 1   (arg 1)', 'rsi = 2   (arg 2)', 'rdx = 3   (arg 3)'] });
+    drawStack('call pushed the return address; the prologue pushed rbp and reserved space for locals.');
+  });
+  $('callNested').addEventListener('click', () => {
+    if (frames.length >= 4) return drawStack('That’s enough frames for one screen. Try ret.');
+    const n = ['helper', 'parse', 'compute'][frames.length % 3];
+    frames.push({ name: n, caller: frames.length ? frames[frames.length - 1].name : 'main', locals: 'buf, i', regs: ['rdi = …   (arg 1)'] });
+    drawStack('Another frame below the previous one. A debugger backtrace walks these saved rbp values.');
+  });
+  $('retBtn').addEventListener('click', () => {
+    if (!frames.length) return drawStack('Nothing to return from.');
+    const f = frames.pop();
+    drawStack(f.name === 'add3' ? 'leave + ret: rsp moves back up, ret pops the return address into rip. Result in rax = 6.' : `ret jumps back into ${f.caller}.`);
+  });
+  drawStack();
+
+  function drawOverflow() {
+    const len = +$('ovLen').value, canary = $('ovCanary').checked;
+    $('ovLenV').textContent = len + (len ? ' bytes + NUL' : ' (empty) + NUL');
+    const written = len + 1;               // strcpy copies the terminating NUL too
+    const layout = [['buf[0..15]', 16, 'loc']];
+    if (canary) layout.push(['canary (random)', 8, 'can']);
+    layout.push(['saved rbp', 8, 'rbp'], ['return address', 8, 'ret']);
+    let off = 0;
+    const smashed = [];
+    const rows = layout.map(([name, size, cls]) => {
+      const start = off; off += size;
+      const hit = written > start;
+      const full = written >= start + size;
+      if (hit && cls !== 'loc') smashed.push(name);
+      return [name, size, cls, start, hit && cls !== 'loc', full];
+    });
+    const s = $('ovStk');
+    s.innerHTML = '';
+    s.append(h('div', { class: 'hint' }, 'higher addresses'));
+    [...rows].reverse().forEach(([name, size, cls, start, hit]) => {
+      const fill = cls === 'loc' ? `${Math.min(written, 16)} / 16 bytes used` : hit ? 'overwritten with 0x41 ("A")' : 'intact';
+      s.append(h('div', { class: 'fr ' + (hit ? 'smash' : cls) }, h('span', null, name), h('span', null, fill + `  @ +${start}`)));
+    });
+    s.append(h('div', { class: 'hint' }, 'lower addresses (buf starts here, strcpy writes upward)'));
+    const r = $('ovRes');
+    if (!smashed.length) { r.className = 'resline ok'; r.textContent = 'Fits in the buffer. Nothing else touched.'; }
+    else if (canary && smashed.includes('canary (random)')) { r.className = 'resline warn'; r.textContent = 'Canary changed → checked before ret → "*** stack smashing detected ***" → abort(). The attack is stopped.'; }
+    else if (smashed.includes('return address')) { r.className = 'resline bad'; r.textContent = 'Return address overwritten: ret jumps to an attacker-chosen address (or crashes with SIGSEGV). Classic control-flow hijack.'; }
+    else { r.className = 'resline bad'; r.textContent = 'Saved rbp corrupted: the caller’s frame is now broken; a crash is likely after return.'; }
+  }
+  $('ovLen').addEventListener('input', drawOverflow);
+  $('ovCanary').addEventListener('change', drawOverflow);
+  drawOverflow();
+})();
+</script>
+</body>
+</html>

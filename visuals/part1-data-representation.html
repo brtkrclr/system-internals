@@ -1,0 +1,1071 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Data Representation, Visualized</title>
+<meta name="description" content="Interactive visuals for Part 1 of System Internals: bits, hex, bytes, word size, endianness, alignment, padding, cache lines, integers, floating point and UTF-8.">
+<script>
+  (function () {
+    var saved = null;
+    try { saved = localStorage.getItem('theme'); } catch (e) {}
+    var dark = saved ? saved === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches;
+    document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+  })();
+</script>
+<style>
+  :root {
+    --bg: #ffffff; --surface: #f6f8fa; --surface-2: #eaeef2; --text: #1f2328; --muted: #59636e;
+    --border: #d0d7de; --accent: #0969da; --accent-soft: #ddf4ff;
+    --c-blue: #0969da; --c-pink: #bf3989; --c-green: #1a7f37; --c-amber: #9a6700; --c-purple: #8250df; --c-red: #cf222e;
+    --c-blue-soft: #ddf4ff; --c-pink-soft: #ffeff7; --c-green-soft: #dafbe1; --c-amber-soft: #fff8c5; --c-purple-soft: #fbefff; --c-red-soft: #ffebe9;
+    --hatch: repeating-linear-gradient(45deg, transparent 0 4px, rgba(130,80,223,.22) 4px 7px);
+    --radius: 8px;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  html[data-theme="dark"] {
+    --bg: #0d1117; --surface: #151b23; --surface-2: #212830; --text: #e6edf3; --muted: #9198a1;
+    --border: #3d444d; --accent: #4493f8; --accent-soft: rgba(56,139,253,.15);
+    --c-blue: #4493f8; --c-pink: #f778ba; --c-green: #3fb950; --c-amber: #d29922; --c-purple: #ab7df8; --c-red: #f85149;
+    --c-blue-soft: rgba(56,139,253,.18); --c-pink-soft: rgba(247,120,186,.16); --c-green-soft: rgba(63,185,80,.16);
+    --c-amber-soft: rgba(210,153,34,.18); --c-purple-soft: rgba(171,125,248,.18); --c-red-soft: rgba(248,81,73,.16);
+    --hatch: repeating-linear-gradient(45deg, transparent 0 4px, rgba(171,125,248,.30) 4px 7px);
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif; }
+  a { color: var(--accent); }
+  code, .mono { font-family: var(--mono); font-size: .92em; }
+  code { background: var(--surface-2); padding: .1em .35em; border-radius: 4px; }
+
+  header.top { max-width: 1040px; margin: 0 auto; padding: 32px 16px 8px; }
+  header.top h1 { margin: 0 0 6px; font-size: clamp(28px, 5vw, 40px); line-height: 1.15; }
+  header.top p { margin: 0 0 8px; color: var(--muted); max-width: 70ch; }
+  .backlink { font-size: 14px; }
+
+  nav.chips { position: sticky; top: 0; z-index: 10; background: var(--bg); border-bottom: 1px solid var(--border); }
+  nav.chips .inner { max-width: 1040px; margin: 0 auto; padding: 8px 16px; display: flex; gap: 6px; overflow-x: auto; scrollbar-width: thin; }
+  nav.chips a { flex: none; font-size: 13px; padding: 4px 10px; border: 1px solid var(--border); border-radius: 999px;
+                color: var(--text); text-decoration: none; background: var(--surface); white-space: nowrap; }
+  nav.chips a:hover, nav.chips a.active { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+
+  main { max-width: 1040px; margin: 0 auto; padding: 8px 16px 64px; }
+  section.card { border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin: 24px 0; background: var(--bg); scroll-margin-top: 56px; }
+  section.card > h2 { margin: 0 0 4px; font-size: 22px; }
+  section.card > h2 .num { color: var(--muted); font-weight: 500; margin-right: 6px; }
+  .lead { color: var(--muted); margin: 0 0 16px; max-width: 75ch; }
+  .demo { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; margin: 12px 0; overflow-x: auto; }
+  .demo h3 { margin: 0 0 10px; font-size: 15px; }
+  .row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+  .stack { display: flex; flex-direction: column; gap: 10px; }
+  .connect { font-size: 14px; color: var(--muted); border-left: 3px solid var(--accent); padding: 4px 0 4px 10px; margin-top: 14px; }
+  .hint { font-size: 13px; color: var(--muted); }
+  .big { font-family: var(--mono); font-size: 22px; font-weight: 600; }
+  .stat { display: inline-flex; flex-direction: column; padding: 6px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg); min-width: 90px; }
+  .stat .k { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  .stat .v { font-family: var(--mono); font-size: 18px; font-weight: 600; }
+  .ok { color: var(--c-green); } .bad { color: var(--c-red); } .warn { color: var(--c-amber); }
+
+  button, select, input[type="text"], input[type="number"] {
+    font: inherit; font-size: 14px; color: var(--text); background: var(--bg);
+    border: 1px solid var(--border); border-radius: 6px; padding: 5px 10px;
+  }
+  button { cursor: pointer; }
+  button:hover { background: var(--surface-2); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover { filter: brightness(1.08); background: var(--accent); }
+  button:focus-visible, select:focus-visible, input:focus-visible, .bit:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  input[type="range"] { accent-color: var(--accent); width: min(360px, 100%); }
+  label.inline { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; }
+
+  /* bits */
+  .bits { display: inline-flex; gap: 4px; flex-wrap: nowrap; }
+  .bitcol { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+  .bit { width: 34px; height: 40px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg);
+         font: 600 18px var(--mono); color: var(--muted); cursor: pointer; padding: 0; transition: background .12s, color .12s; }
+  .bit.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .bit.sm { width: 22px; height: 30px; font-size: 14px; }
+  .bitcol .w { font: 11px var(--mono); color: var(--muted); }
+  .nibble { display: inline-flex; flex-direction: column; align-items: center; gap: 6px; padding: 6px; border: 1px dashed var(--border); border-radius: 8px; }
+  .nibble .hx { font: 700 22px var(--mono); color: var(--c-pink); }
+  .gap { width: 10px; }
+
+  /* byte cells */
+  .cells { display: grid; gap: 2px; }
+  .cell { height: 30px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg);
+          font: 11px var(--mono); color: var(--muted); display: flex; align-items: center; justify-content: center; position: relative; }
+  .cell.hl { background: var(--c-blue-soft); border-color: var(--c-blue); color: var(--text); font-weight: 600; }
+  .cell.hl2 { background: var(--c-pink-soft); border-color: var(--c-pink); color: var(--text); }
+  .cell.pad { background: var(--hatch), var(--bg); border-style: dashed; }
+  .cell.line { background: var(--c-amber-soft); }
+  .cell.boxstart { margin-left: 6px; }
+  .cell.lineb { box-shadow: -4px 0 0 0 var(--c-red); margin-left: 8px; }
+
+  table.mem { border-collapse: collapse; font-family: var(--mono); font-size: 14px; }
+  table.mem th, table.mem td { border: 1px solid var(--border); padding: 4px 10px; text-align: center; }
+  table.mem th { background: var(--surface-2); font-weight: 600; font-family: inherit; font-size: 13px; }
+
+  .tiles { display: grid; gap: 1px; }
+  .tile { width: 9px; height: 9px; background: var(--surface-2); border-radius: 1px; }
+  .tile.mark { background: var(--c-pink); }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 13px; color: var(--muted); }
+  .legend span::before { content: ""; display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 5px; vertical-align: -2px; background: var(--sw); border: 1px solid var(--border); }
+
+  /* address space */
+  .addrspace { display: grid; grid-template-columns: 120px 1fr; gap: 0; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; font-size: 13px; max-width: 560px; }
+  .addrspace > div { padding: 8px 10px; border-bottom: 1px solid var(--border); }
+  .addrspace .lbl { font-family: var(--mono); font-size: 11px; color: var(--muted); background: var(--surface-2); }
+  .addrspace .zone.kern { background: var(--c-purple-soft); }
+  .addrspace .zone.hole { background: var(--hatch), var(--bg); color: var(--muted); }
+  .addrspace .zone.user { background: var(--c-green-soft); }
+  .addrspace .zone.here { outline: 3px solid var(--accent); outline-offset: -3px; font-weight: 600; }
+  .bar { height: 26px; border-radius: 6px; display: flex; overflow: hidden; border: 1px solid var(--border); font-size: 12px; }
+  .bar > div { display: flex; align-items: center; justify-content: center; color: var(--text); white-space: nowrap; overflow: hidden; }
+  .logbar { display: grid; grid-template-columns: 110px 1fr 90px; gap: 6px 10px; align-items: center; font-size: 13px; }
+  .logbar .fill { height: 14px; border-radius: 4px; background: var(--accent); }
+
+  /* struct */
+  .fields { display: flex; flex-direction: column; gap: 6px; }
+  .field { display: flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 14px; }
+  .field .sw { width: 14px; height: 14px; border-radius: 3px; }
+  .field button { padding: 2px 8px; font-size: 13px; }
+  .structgrid { display: grid; grid-template-columns: 56px repeat(8, minmax(38px, 1fr)); gap: 3px; align-items: center; max-width: 520px; }
+  .structgrid .off { font: 11px var(--mono); color: var(--muted); text-align: right; padding-right: 6px; }
+  .structgrid .cell { height: 34px; font-size: 12px; color: var(--text); }
+
+  /* matrix sim */
+  .matrix { display: grid; grid-template-columns: repeat(8, 30px); gap: 3px; }
+  .matrix .cell { height: 30px; transition: background .1s; }
+  .matrix .cell.cached { background: var(--c-blue-soft); }
+  .matrix .cell.hit { background: var(--c-green); color: #fff; border-color: var(--c-green); }
+  .matrix .cell.miss { background: var(--c-red); color: #fff; border-color: var(--c-red); }
+  .matrix .cell.gb { margin-left: 5px; }
+
+  .cores { display: grid; grid-template-columns: repeat(2, minmax(160px, 1fr)); gap: 12px; max-width: 560px; }
+  .core { border: 1px solid var(--border); border-radius: 8px; padding: 10px; background: var(--bg); transition: box-shadow .15s; }
+  .core.flash { box-shadow: 0 0 0 3px var(--c-red); }
+  .core h4 { margin: 0 0 6px; font-size: 14px; }
+  .state { font: 600 13px var(--mono); padding: 2px 6px; border-radius: 4px; }
+  .state.M { background: var(--c-green-soft); color: var(--c-green); }
+  .state.I { background: var(--c-red-soft); color: var(--c-red); }
+  .state.S { background: var(--c-blue-soft); color: var(--c-blue); }
+  .state.none { background: var(--surface-2); color: var(--muted); }
+
+  /* float */
+  .fbits { display: flex; flex-wrap: wrap; gap: 2px; }
+  .fbits .bit { width: 20px; height: 30px; font-size: 13px; }
+  .fbits .bit.s { --tone: var(--c-red); } .fbits .bit.e { --tone: var(--c-blue); } .fbits .bit.f { --tone: var(--c-green); }
+  .fbits .bit { border-color: var(--tone); color: var(--tone); }
+  .fbits .bit.on { background: var(--tone); color: #fff; }
+  .fbits .sep { width: 8px; }
+  .exact { font-family: var(--mono); font-size: 13px; word-break: break-all; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; }
+
+  /* utf8 */
+  .cps { display: flex; flex-wrap: wrap; gap: 10px; }
+  .cp { border: 1px solid var(--border); border-radius: 8px; background: var(--bg); padding: 10px; min-width: 150px; }
+  .cp .ch { font-size: 30px; line-height: 1.1; }
+  .cp .u { font: 600 13px var(--mono); color: var(--c-purple); }
+  .cp .bytes { font: 13px var(--mono); margin-top: 6px; }
+  .cp .pre { color: var(--muted); }
+  .cp .pay { color: var(--c-green); font-weight: 600; }
+  .cp .hexb { color: var(--c-pink); }
+
+  nav.pager { max-width: 1040px; margin: 0 auto; padding: 0 16px 48px; display: flex; flex-wrap: wrap; gap: 10px; justify-content: space-between; font-size: 15px; }
+  nav.pager a { padding: 8px 14px; border: 1px solid var(--border); border-radius: 8px; text-decoration: none; background: var(--surface); }
+  nav.pager a:hover { border-color: var(--accent); background: var(--accent-soft); }
+  svg text { font-family: var(--mono); }
+  .theme-btn { position: fixed; top: 10px; right: 12px; z-index: 20; width: 34px; height: 34px; padding: 0; font-size: 16px; }
+  @media (max-width: 600px) {
+    section.card { padding: 14px; }
+    .bit { width: 30px; height: 36px; font-size: 16px; }
+    .structgrid { grid-template-columns: 44px repeat(8, minmax(28px, 1fr)); }
+  }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+<button class="theme-btn" id="themeBtn" type="button" aria-label="Toggle dark mode"></button>
+
+<header class="top">
+  <a class="backlink" href="../#1-data-representation">← Back to the notes: Part 1</a>
+  <h1>Data Representation, Visualized</h1>
+  <p>Every section of Part 1 as something you can poke at. Click bits, drag sliders, type values, and watch what the hardware actually sees.</p>
+</header>
+
+<nav class="chips" aria-label="Sections"><div class="inner" id="chips"></div></nav>
+
+<main>
+
+<!-- 1.1 ------------------------------------------------------------------>
+<section class="card" id="s1-1" data-title="1.1 Bits">
+  <h2><span class="num">1.1</span>Bits, Bytes and Binary</h2>
+  <p class="lead">A bit is a switch: 0 or 1. Binary is a positional system like decimal, but each position is worth twice the one to its right. Click the bits.</p>
+  <div class="demo">
+    <h3>One byte = 8 bits</h3>
+    <div class="bits" id="b1"></div>
+    <div class="row" style="margin-top:12px">
+      <div class="stat"><span class="k">decimal</span><span class="v" id="b1dec"></span></div>
+      <div class="stat"><span class="k">hex</span><span class="v" id="b1hex"></span></div>
+      <div class="stat"><span class="k">binary</span><span class="v" id="b1bin"></span></div>
+    </div>
+    <p class="mono hint" id="b1expr" style="margin:10px 0 0"></p>
+    <div class="row" style="margin-top:10px">
+      <button type="button" data-b1="0">0</button><button type="button" data-b1="1">1</button>
+      <button type="button" data-b1="11">11</button><button type="button" data-b1="65">65 ('A')</button>
+      <button type="button" data-b1="128">128</button><button type="button" data-b1="255">255</button>
+    </div>
+  </div>
+  <div class="demo">
+    <h3>n bits → 2ⁿ different values</h3>
+    <label class="inline">n = <input type="range" id="nbits" min="1" max="16" value="3"> <b class="mono" id="nbitsv"></b></label>
+    <p class="big" id="nbitsOut" style="margin:8px 0"></p>
+    <div class="row mono" id="nbitsList" style="gap:6px"></div>
+  </div>
+  <div class="connect">Connection: 9 bits index 512 page-table entries, 12 bits address a 4096-byte page, and 2 bits of the CS register encode 4 rings.</div>
+</section>
+
+<!-- 1.2 ------------------------------------------------------------------>
+<section class="card" id="s1-2" data-title="1.2 Hex">
+  <h2><span class="num">1.2</span>Hexadecimal</h2>
+  <p class="lead">Group bits in fours (nibbles). Each nibble is exactly one hex digit, 0–F. That's why two hex digits are always one byte.</p>
+  <div class="demo">
+    <label class="inline">value <input type="range" id="hxr" min="0" max="65535" value="57004"></label>
+    <label class="inline">or type hex <input type="text" id="hxt" size="8" class="mono" value="DEAC" aria-label="hex value"></label>
+    <div class="row" id="hxnibbles" style="margin-top:14px"></div>
+    <p class="big" id="hxout" style="margin:12px 0 0"></p>
+  </div>
+  <div class="connect">Connection: memory addresses and dumps (<code>/proc/self/maps</code>, <code>xxd</code>) are written in hex because each pair of digits is one byte.</div>
+</section>
+
+<!-- 1.3 ------------------------------------------------------------------>
+<section class="card" id="s1-3" data-title="1.3 Bytes">
+  <h2><span class="num">1.3</span>Why a Byte Is 8 Bits</h2>
+  <p class="lead">Each square is one value a code of that size can represent. Six bits fit uppercase letters and digits; ASCII needed seven; eight leaves room for everything else and won in 1964.</p>
+  <div class="demo">
+    <div class="row" style="align-items:flex-start; gap:28px" id="bytegrids"></div>
+    <p class="hint" style="margin:10px 0 0">Pink square: <code>'A'</code> = 65 in ASCII.</p>
+  </div>
+</section>
+
+<!-- 1.4 ------------------------------------------------------------------>
+<section class="card" id="s1-4" data-title="1.4 Word size">
+  <h2><span class="num">1.4</span>Word Size, Pointers and Address Space</h2>
+  <p class="lead">A pointer is just a number, and its width decides how much memory you can name. One address always means one byte.</p>
+  <div class="demo">
+    <div class="row">
+      <button type="button" id="ws32">32-bit CPU</button>
+      <button type="button" id="ws64" class="primary">64-bit CPU</button>
+    </div>
+    <div style="margin-top:12px" class="stack">
+      <div><span class="hint">register / pointer:</span> <span class="row" id="wsbytes" style="display:inline-flex; gap:3px; vertical-align:middle"></span></div>
+      <div class="big" id="wsinfo"></div>
+    </div>
+  </div>
+  <div class="demo">
+    <h3>How big are these address spaces? (log scale: each step to the right doubles)</h3>
+    <div class="logbar" id="logbars"></div>
+  </div>
+  <div class="demo">
+    <h3>Canonical address checker (x86-64, 48-bit)</h3>
+    <div class="row">
+      <input type="text" id="canon" class="mono" size="22" value="0x7ffc5b8e7000" aria-label="64-bit address">
+      <button type="button" data-canon="0x55d0c1a02000">binary (PIE)</button>
+      <button type="button" data-canon="0x7ffc5b8e7000">stack</button>
+      <button type="button" data-canon="0xffffffff81000000">kernel</button>
+      <button type="button" data-canon="0x0000900000000000">bad</button>
+    </div>
+    <p class="mono hint" id="canonBits" style="margin:10px 0 6px; word-break: break-all"></p>
+    <p id="canonOut" style="margin:0 0 10px; font-weight:600"></p>
+    <div class="addrspace" id="addrspace">
+      <div class="lbl">0xFFFF…FFFF<br>0xFFFF8000…</div><div class="zone kern" data-z="kern">kernel space: bit 47 = 1, bits 63..48 all 1</div>
+      <div class="lbl">(the middle)</div><div class="zone hole" data-z="hole">non-canonical hole: any access → #GP → SIGSEGV</div>
+      <div class="lbl">0x00007FFF…<br>0x0000…0000</div><div class="zone user" data-z="user">user space: bit 47 = 0, bits 63..48 all 0</div>
+    </div>
+  </div>
+  <div class="demo">
+    <h3>32-bit Linux: the 3 GiB / 1 GiB split of each process's 4 GiB virtual space</h3>
+    <div class="bar" style="max-width:560px">
+      <div style="flex:3; background: var(--c-green-soft)">user space: 3 GiB</div>
+      <div style="flex:1; background: var(--c-purple-soft)">kernel: 1 GiB</div>
+    </div>
+    <p class="hint" style="margin:8px 0 0">Virtual split, not RAM. PAE let the machine hold up to 64 GiB of RAM, but each process still saw only 4 GiB.</p>
+  </div>
+</section>
+
+<!-- 1.5 ------------------------------------------------------------------>
+<section class="card" id="s1-5" data-title="1.5 Endianness">
+  <h2><span class="num">1.5</span>Endianness</h2>
+  <p class="lead">Same value, same addresses, same number of bytes. Only the order of the bytes in memory changes. Darker = more significant byte.</p>
+  <div class="demo">
+    <div class="row">
+      <label class="inline">value 0x<input type="text" id="endv" class="mono" size="18" value="12345678" aria-label="hex value"></label>
+      <label class="inline">size <select id="ends"><option value="2">2 bytes</option><option value="4" selected>4 bytes</option><option value="8">8 bytes</option></select></label>
+    </div>
+    <div style="margin-top:12px; overflow-x:auto"><table class="mem" id="endTable"></table></div>
+    <p class="hint" style="margin:8px 0 0">x86, ARM (as used), RISC-V: little-endian. Network protocols: big-endian.</p>
+  </div>
+  <div class="demo">
+    <h3>Network byte order: why <code>htons()</code> exists</h3>
+    <label class="inline">port <input type="number" id="port" min="0" max="65535" value="8080"></label>
+    <div id="portOut" class="stack" style="margin-top:10px; font-family: var(--mono); font-size:14px"></div>
+  </div>
+</section>
+
+<!-- 1.6 ------------------------------------------------------------------>
+<section class="card" id="s1-6" data-title="1.6 Alignment">
+  <h2><span class="num">1.6</span>Alignment</h2>
+  <p class="lead">The CPU fetches memory in whole boxes. Data that fits in one box costs one trip; data that straddles a boundary costs two. Move the value and watch.</p>
+  <div class="demo">
+    <div class="row">
+      <label class="inline">type <select id="alSize"><option value="2">short (2 B)</option><option value="4" selected>int (4 B)</option><option value="8">long (8 B)</option></select></label>
+      <label class="inline">box width <select id="alBox"><option value="4" selected>4 B</option><option value="8">8 B</option></select></label>
+      <label class="inline">start address <input type="range" id="alAddr" min="0" max="124" value="2"> <b class="mono" id="alAddrV"></b></label>
+    </div>
+    <div class="cells" id="alCells" style="margin-top:14px"></div>
+    <div class="row" style="margin-top:12px" id="alStats"></div>
+    <p class="hint" style="margin:8px 0 0">The red bar at byte 64 is a cache-line boundary. Crossing it means two cache lines; crossing a 4 KiB page boundary can mean two TLB lookups or two page faults.</p>
+  </div>
+</section>
+
+<!-- 1.7 ------------------------------------------------------------------>
+<section class="card" id="s1-7" data-title="1.7 Padding">
+  <h2><span class="num">1.7</span>Padding: Build a Struct</h2>
+  <p class="lead">The compiler places each field at a multiple of its alignment and rounds the total size up to the largest alignment. Hatched cells are wasted padding. Reorder the fields and watch <code>sizeof</code> change.</p>
+  <div class="demo">
+    <div class="row">
+      <span class="hint">add:</span>
+      <button type="button" data-add="char">char</button><button type="button" data-add="short">short</button>
+      <button type="button" data-add="int">int</button><button type="button" data-add="double">double</button>
+      <button type="button" data-add="pointer">pointer</button>
+      <span class="hint" style="margin-left:8px">presets:</span>
+      <button type="button" id="stBad">struct Bad</button><button type="button" id="stGood">struct Good</button>
+      <button type="button" id="stSort" class="primary">Sort largest first</button>
+    </div>
+    <div class="row" style="align-items:flex-start; gap:24px; margin-top:14px">
+      <div class="stack" style="min-width:230px">
+        <pre class="mono" id="stCode" style="margin:0; background:var(--bg); border:1px solid var(--border); border-radius:6px; padding:10px; font-size:13px"></pre>
+        <div class="fields" id="stFields"></div>
+      </div>
+      <div class="stack" style="flex:1; min-width:280px">
+        <div class="structgrid" id="stGrid"></div>
+        <div class="row" id="stStats"></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 1.8 ------------------------------------------------------------------>
+<section class="card" id="s1-8" data-title="1.8 Cache lines">
+  <h2><span class="num">1.8</span>Cache Lines and Locality</h2>
+  <p class="lead">The CPU never fetches one byte. It fetches the whole 64-byte line the byte lives in. Click any byte.</p>
+  <div class="demo">
+    <h3>Click a byte: which line gets fetched?</h3>
+    <div class="cells" id="clCells" style="grid-template-columns: repeat(16, minmax(22px, 1fr)); max-width:640px"></div>
+    <p class="mono" id="clOut" style="margin:10px 0 0"></p>
+  </div>
+  <div class="demo">
+    <h3>Row-by-row vs column-by-column over a 2D array</h3>
+    <p class="hint" style="margin:0 0 10px">Scaled down so you can see it: an 8×8 array of ints, a cache line holds 4 ints, and the cache holds 4 lines (LRU). Same 64 reads, very different miss counts.</p>
+    <div class="row" style="align-items:flex-start; gap:24px">
+      <div class="matrix" id="mx"></div>
+      <div class="stack">
+        <div class="row"><button type="button" id="mxRow" class="primary">▶ Row by row</button><button type="button" id="mxCol">▶ Column by column</button></div>
+        <label class="inline">speed <input type="range" id="mxSpeed" min="20" max="400" value="120" style="width:140px"></label>
+        <div class="row"><div class="stat"><span class="k">hits</span><span class="v ok" id="mxHits">0</span></div><div class="stat"><span class="k">misses</span><span class="v bad" id="mxMiss">0</span></div></div>
+        <div class="legend"><span style="--sw: var(--c-green)">hit</span><span style="--sw: var(--c-red)">miss (fetch line)</span><span style="--sw: var(--c-blue-soft)">in cache</span></div>
+      </div>
+    </div>
+  </div>
+  <div class="demo">
+    <h3>False sharing: two cores, two counters</h3>
+    <div class="row">
+      <button type="button" id="fsSame" class="primary">Same cache line</button>
+      <button type="button" id="fsPad">Padded (alignas(64))</button>
+      <button type="button" id="fsPlay">▶ Run 20 writes</button>
+    </div>
+    <div class="bar" id="fsLayout" style="margin:12px 0; max-width:560px"></div>
+    <div class="cores">
+      <div class="core" id="core0"><h4>Core 0 writes A</h4><div id="core0s"></div></div>
+      <div class="core" id="core1"><h4>Core 1 writes B</h4><div id="core1s"></div></div>
+    </div>
+    <div class="row" style="margin-top:10px"><div class="stat"><span class="k">line transfers between cores</span><span class="v" id="fsCount">0</span></div></div>
+    <p class="hint" style="margin:8px 0 0">The cores never touch each other's variable, but MESI works per line: a write invalidates the other core's copy of the whole line.</p>
+  </div>
+</section>
+
+<!-- 1.9 ------------------------------------------------------------------>
+<section class="card" id="s1-9" data-title="1.9 Integers">
+  <h2><span class="num">1.9</span>Integers: Two's Complement</h2>
+  <p class="lead">The same 8 bits mean different numbers depending on the type. In two's complement the top bit has a negative weight.</p>
+  <div class="demo">
+    <div class="bits" id="b9"></div>
+    <div class="row" style="margin-top:12px">
+      <div class="stat"><span class="k">as unsigned (uint8_t)</span><span class="v" id="b9u"></span></div>
+      <div class="stat"><span class="k">as signed (int8_t)</span><span class="v" id="b9s"></span></div>
+      <button type="button" id="b9neg">Negate: −x = ~x + 1</button>
+    </div>
+    <pre class="mono" id="b9steps" style="margin:10px 0 0; font-size:14px"></pre>
+  </div>
+  <div class="demo">
+    <h3>The number wheel (4 bits): overflow is just going around the circle</h3>
+    <div class="row" style="align-items:center; gap:24px">
+      <svg id="wheel" viewBox="0 0 260 260" width="260" height="260" role="img" aria-label="4-bit number wheel"></svg>
+      <div class="stack">
+        <div class="row"><button type="button" id="whDec">− 1</button><button type="button" id="whInc" class="primary">+ 1</button></div>
+        <div class="big" id="whVal"></div>
+        <div id="whMsg" style="min-height:3em; font-weight:600"></div>
+        <div class="legend"><span style="--sw: var(--c-blue)">outer ring: unsigned 0–15</span><span style="--sw: var(--c-pink)">inner ring: signed −8…7</span></div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- 1.10 ----------------------------------------------------------------->
+<section class="card" id="s1-10" data-title="1.10 Floats">
+  <h2><span class="num">1.10</span>Floating Point (IEEE 754)</h2>
+  <p class="lead">value = (−1)<sup>sign</sup> × 1.fraction × 2<sup>exponent − bias</sup>. Type a number or click the bits, and see the value that is <em>actually</em> stored.</p>
+  <div class="demo">
+    <div class="row">
+      <input type="text" id="fl" class="mono" size="20" value="0.1" aria-label="number">
+      <button type="button" id="fl32">float (32-bit)</button><button type="button" id="fl64" class="primary">double (64-bit)</button>
+    </div>
+    <div class="row" style="margin-top:8px; gap:6px">
+      <button type="button" data-fl="0.1">0.1</button><button type="button" data-fl="0.2">0.2</button>
+      <button type="button" data-fl="0.30000000000000004">0.1 + 0.2</button><button type="button" data-fl="0.3">0.3</button>
+      <button type="button" data-fl="-6.5">−6.5</button><button type="button" data-fl="1">1</button>
+      <button type="button" data-fl="9007199254740993">2⁵³ + 1</button><button type="button" data-fl="Infinity">∞</button>
+      <button type="button" data-fl="NaN">NaN</button><button type="button" data-fl="-0">−0</button>
+    </div>
+    <div class="fbits" id="flBits" style="margin-top:14px"></div>
+    <div class="legend" style="margin-top:6px"><span style="--sw: var(--c-red)">sign</span><span style="--sw: var(--c-blue)">exponent</span><span style="--sw: var(--c-green)">fraction</span></div>
+    <div class="row" id="flStats" style="margin-top:12px"></div>
+    <p class="mono" id="flFormula" style="margin:10px 0 6px"></p>
+    <div class="hint">Exact value stored in memory:</div>
+    <div class="exact" id="flExact"></div>
+  </div>
+  <div class="demo">
+    <h3>Why <code>0.1 + 0.2 != 0.3</code></h3>
+    <div class="stack mono" id="flSum" style="font-size:13px"></div>
+  </div>
+</section>
+
+<!-- 1.11 ----------------------------------------------------------------->
+<section class="card" id="s1-11" data-title="1.11 UTF-8">
+  <h2><span class="num">1.11</span>Text: Unicode and UTF-8</h2>
+  <p class="lead">Each character is a code point (U+XXXX). UTF-8 stores it in 1 to 4 bytes. Grey bits are the length markers; green bits carry the code point.</p>
+  <div class="demo">
+    <div class="row">
+      <input type="text" id="u8" value="Aé€😀" size="24" aria-label="text to encode" style="font-size:18px">
+      <button type="button" data-u8="Aé€😀">Aé€😀</button><button type="button" data-u8="Merhaba dünya">Merhaba dünya</button>
+      <button type="button" data-u8="日本語">日本語</button><button type="button" data-u8="👩‍💻">👩‍💻</button>
+    </div>
+    <div class="row" id="u8Stats" style="margin-top:12px"></div>
+    <div class="cps" id="u8Cps" style="margin-top:12px"></div>
+  </div>
+  <div class="demo">
+    <h3>The encoding rule</h3>
+    <table class="mem">
+      <tr><th>code point range</th><th>bytes</th><th>bit pattern</th></tr>
+      <tr><td>U+0000 – U+007F</td><td>1</td><td><span style="color:var(--muted)">0</span><span class="ok">xxxxxxx</span> (same as ASCII)</td></tr>
+      <tr><td>U+0080 – U+07FF</td><td>2</td><td><span style="color:var(--muted)">110</span><span class="ok">xxxxx</span> <span style="color:var(--muted)">10</span><span class="ok">xxxxxx</span></td></tr>
+      <tr><td>U+0800 – U+FFFF</td><td>3</td><td><span style="color:var(--muted)">1110</span><span class="ok">xxxx</span> <span style="color:var(--muted)">10</span><span class="ok">xxxxxx</span> <span style="color:var(--muted)">10</span><span class="ok">xxxxxx</span></td></tr>
+      <tr><td>U+10000 – U+10FFFF</td><td>4</td><td><span style="color:var(--muted)">11110</span><span class="ok">xxx</span> <span style="color:var(--muted)">10</span><span class="ok">xxxxxx</span> ×3</td></tr>
+    </table>
+  </div>
+  <div class="connect">Connection: <code>strlen()</code> counts bytes, not characters. To the kernel a filename is just bytes (anything but <code>/</code> and NUL).</div>
+</section>
+
+</main>
+
+<nav class="pager" aria-label="Part navigation">
+  <a href="part0-big-picture.html">← Part 0: The Big Picture</a>
+  <a href="index.html">All visuals</a>
+  <a href="part2-cpu.html">Part 2: CPU →</a>
+</nav>
+
+<script>
+(function () {
+  'use strict';
+  const $ = (id) => document.getElementById(id);
+  const h = (tag, props, ...kids) => {
+    const n = document.createElement(tag);
+    if (props) for (const k in props) {
+      if (k === 'class') n.className = props[k];
+      else if (k === 'style') n.style.cssText = props[k];
+      else if (k.startsWith('on')) n.addEventListener(k.slice(2), props[k]);
+      else n.setAttribute(k, props[k]);
+    }
+    for (const kid of kids.flat()) if (kid != null) n.append(kid);
+    return n;
+  };
+  const hex = (n, w) => n.toString(16).toUpperCase().padStart(w, '0');
+  const bin = (n, w) => n.toString(2).padStart(w, '0');
+
+  /* ---------- theme ---------- */
+  const themeBtn = $('themeBtn');
+  function applyTheme(t) {
+    document.documentElement.setAttribute('data-theme', t);
+    themeBtn.innerHTML = t === 'dark' ? '&#9728;' : '&#9790;';
+    themeBtn.title = t === 'dark' ? 'Switch to light mode' : 'Switch to dark mode';
+  }
+  applyTheme(document.documentElement.getAttribute('data-theme'));
+  themeBtn.addEventListener('click', () => {
+    const t = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+    try { localStorage.setItem('theme', t); } catch (e) {}
+    applyTheme(t);
+  });
+
+  /* ---------- section chips ---------- */
+  const chips = $('chips');
+  const sections = [...document.querySelectorAll('section.card')];
+  sections.forEach((s) => chips.append(h('a', { href: '#' + s.id }, s.dataset.title)));
+  const chipLinks = [...chips.children];
+  const io = new IntersectionObserver((entries) => {
+    entries.forEach((e) => {
+      if (!e.isIntersecting) return;
+      chipLinks.forEach((a) => a.classList.toggle('active', a.getAttribute('href') === '#' + e.target.id));
+      const act = chips.querySelector('.active');
+      if (act) act.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    });
+  }, { rootMargin: '-45% 0px -50% 0px' });
+  sections.forEach((s) => io.observe(s));
+
+  /* ---------- reusable bit row ---------- */
+  function bitRow(container, n, getVal, setVal, weightLabel) {
+    container.innerHTML = '';
+    const btns = [];
+    for (let i = n - 1; i >= 0; i--) {
+      const b = h('button', { class: 'bit', type: 'button', 'aria-label': 'bit ' + i });
+      b.addEventListener('click', () => setVal(getVal() ^ (1 << i)));
+      container.append(h('div', { class: 'bitcol' }, b, h('span', { class: 'w' }, weightLabel(i))));
+      btns.push([i, b]);
+    }
+    return () => {
+      const v = getVal();
+      btns.forEach(([i, b]) => { const on = (v >> i) & 1; b.textContent = on; b.classList.toggle('on', !!on); b.setAttribute('aria-pressed', on ? 'true' : 'false'); });
+    };
+  }
+
+  /* ---------- 1.1 ---------- */
+  let v1 = 161;
+  const draw1 = bitRow($('b1'), 8, () => v1, (v) => { v1 = v; update1(); }, (i) => String(1 << i));
+  function update1() {
+    draw1();
+    $('b1dec').textContent = v1;
+    $('b1hex').textContent = '0x' + hex(v1, 2);
+    $('b1bin').textContent = bin(v1, 8);
+    const parts = [];
+    for (let i = 7; i >= 0; i--) if ((v1 >> i) & 1) parts.push(1 << i);
+    $('b1expr').textContent = (parts.length ? parts.join(' + ') : '0') + ' = ' + v1;
+  }
+  document.querySelectorAll('[data-b1]').forEach((b) => b.addEventListener('click', () => { v1 = +b.dataset.b1; update1(); }));
+  update1();
+
+  function updateN() {
+    const n = +$('nbits').value;
+    $('nbitsv').textContent = n;
+    $('nbitsOut').textContent = `2^${n} = ${(2 ** n).toLocaleString()} values  (0 … ${(2 ** n - 1).toLocaleString()})`;
+    const list = $('nbitsList');
+    list.innerHTML = '';
+    if (n <= 4) for (let i = 0; i < 2 ** n; i++) list.append(h('code', null, bin(i, n)));
+    else list.append(h('span', { class: 'hint' }, 'Too many to list. Each extra bit doubles the count.'));
+  }
+  $('nbits').addEventListener('input', updateN);
+  updateN();
+
+  /* ---------- 1.2 ---------- */
+  let v2 = 57004;
+  function update2(from) {
+    if (from !== 'range') $('hxr').value = v2;
+    if (from !== 'text') $('hxt').value = hex(v2, 4);
+    const wrap = $('hxnibbles');
+    wrap.innerHTML = '';
+    for (let nib = 3; nib >= 0; nib--) {
+      const bits = h('div', { class: 'bits' });
+      for (let i = 3; i >= 0; i--) {
+        const bitIndex = nib * 4 + i;
+        const on = (v2 >> bitIndex) & 1;
+        bits.append(h('button', { class: 'bit sm' + (on ? ' on' : ''), type: 'button', 'aria-label': 'bit ' + bitIndex,
+          onclick: () => { v2 ^= (1 << bitIndex); update2(); } }, String(on)));
+      }
+      wrap.append(h('div', { class: 'nibble' }, bits, h('span', { class: 'hx' }, hex((v2 >> (nib * 4)) & 15, 1))));
+    }
+    $('hxout').textContent = `0x${hex(v2, 4)} = ${v2}   (2 bytes: 0x${hex(v2 >> 8, 2)} 0x${hex(v2 & 255, 2)})`;
+  }
+  $('hxr').addEventListener('input', () => { v2 = +$('hxr').value; update2('range'); });
+  $('hxt').addEventListener('input', () => {
+    const t = $('hxt').value.replace(/^0x/i, '');
+    if (/^[0-9a-f]{1,4}$/i.test(t)) { v2 = parseInt(t, 16); update2('text'); }
+  });
+  update2();
+
+  /* ---------- 1.3 ---------- */
+  [[6, 64, 'uppercase + digits'], [7, 128, 'ASCII'], [8, 256, 'the 8-bit byte']].forEach(([bits, count, label]) => {
+    const g = h('div', { class: 'tiles', style: `grid-template-columns: repeat(16, 9px)` });
+    for (let i = 0; i < count; i++) g.append(h('div', { class: 'tile' + (bits > 6 && i === 65 ? ' mark' : ''), title: String(i) }));
+    $('bytegrids').append(h('div', { class: 'stack', style: 'gap:6px' },
+      h('b', null, `${bits} bits → ${count}`), h('span', { class: 'hint' }, label), g));
+  });
+
+  /* ---------- 1.4 ---------- */
+  function setWord(w) {
+    $('ws32').classList.toggle('primary', w === 32);
+    $('ws64').classList.toggle('primary', w === 64);
+    const bytes = w / 8;
+    const row = $('wsbytes');
+    row.innerHTML = '';
+    for (let i = 0; i < bytes; i++) row.append(h('div', { class: 'cell hl', style: 'width:38px' }, 'B' + i));
+    $('wsinfo').textContent = w === 32
+      ? 'pointer = 4 bytes → 2^32 addresses = 4 GiB'
+      : 'pointer = 8 bytes → 2^64 possible, 2^48 used = 256 TiB';
+  }
+  $('ws32').addEventListener('click', () => setWord(32));
+  $('ws64').addEventListener('click', () => setWord(64));
+  setWord(64);
+
+  [['16-bit (8086)', 16, '64 KiB'], ['32-bit', 32, '4 GiB'], ['x86-64 (48-bit)', 48, '256 TiB'], ['LA57 (57-bit)', 57, '128 PiB'], ['full 64-bit', 64, '16 EiB']]
+    .forEach(([name, bits, size]) => {
+      $('logbars').append(h('span', null, name), h('div', null, h('div', { class: 'fill', style: `width:${(bits / 64) * 100}%` })), h('b', { class: 'mono' }, size));
+    });
+
+  function checkCanon() {
+    const out = $('canonOut'), bitsEl = $('canonBits');
+    document.querySelectorAll('#addrspace .zone').forEach((z) => z.classList.remove('here'));
+    let raw = $('canon').value.trim().replace(/_/g, '').replace(/'/g, '');
+    if (!/^(0x)?[0-9a-f]{1,16}$/i.test(raw)) { out.textContent = 'Enter up to 16 hex digits.'; out.className = 'warn'; bitsEl.textContent = ''; return; }
+    if (!/^0x/i.test(raw)) raw = '0x' + raw;
+    const a = BigInt(raw);
+    const b = a.toString(2).padStart(64, '0');
+    const top = b.slice(0, 16), b47 = b[16];
+    bitsEl.innerHTML = '';
+    bitsEl.append('bits 63..48: ', h('b', null, top), '   bit 47: ', h('b', null, b47), '   rest: ' + b.slice(17));
+    let zone;
+    if (/^0+$/.test(top) && b47 === '0') { zone = 'user'; out.textContent = '✓ canonical: user-space address'; out.className = 'ok'; }
+    else if (/^1+$/.test(top) && b47 === '1') { zone = 'kern'; out.textContent = '✓ canonical: kernel-space address (Ring 3 access faults)'; out.className = 'ok'; }
+    else { zone = 'hole'; out.textContent = '✗ non-canonical: bits 63..48 must all equal bit 47. Access → #GP → SIGSEGV'; out.className = 'bad'; }
+    document.querySelector(`#addrspace [data-z="${zone}"]`).classList.add('here');
+  }
+  $('canon').addEventListener('input', checkCanon);
+  document.querySelectorAll('[data-canon]').forEach((b) => b.addEventListener('click', () => { $('canon').value = b.dataset.canon; checkCanon(); }));
+  checkCanon();
+
+  /* ---------- 1.5 ---------- */
+  function updateEndian() {
+    const size = +$('ends').value;
+    let t = $('endv').value.replace(/^0x/i, '').replace(/[^0-9a-f]/gi, '');
+    if (!t) t = '0';
+    t = t.slice(-size * 2).padStart(size * 2, '0').toUpperCase();
+    const bytesBE = t.match(/../g);              // most significant first
+    const bytesLE = [...bytesBE].reverse();
+    const toneAt = (sigIndex) => {
+      const alpha = 0.85 - (sigIndex / Math.max(1, size - 1)) * 0.7;
+      return `background: color-mix(in srgb, var(--accent) ${Math.round(alpha * 100)}%, transparent); color: ${alpha > 0.45 ? '#fff' : 'inherit'}`;
+    };
+    const tb = $('endTable');
+    tb.innerHTML = '';
+    tb.append(h('tr', null, h('th', null, 'address'), h('th', null, 'little-endian (x86)'), h('th', null, 'big-endian (network)')));
+    for (let i = 0; i < size; i++) {
+      tb.append(h('tr', null,
+        h('td', null, '0x' + hex(0x1000 + i, 4)),
+        h('td', { style: toneAt(size - 1 - i) }, '0x' + bytesLE[i]),
+        h('td', { style: toneAt(i) }, '0x' + bytesBE[i])));
+    }
+  }
+  $('endv').addEventListener('input', updateEndian);
+  $('ends').addEventListener('change', updateEndian);
+  updateEndian();
+
+  function updatePort() {
+    let p = Math.max(0, Math.min(65535, Math.floor(+$('port').value || 0)));
+    const hi = p >> 8, lo = p & 255, swapped = (lo << 8) | hi;
+    $('portOut').innerHTML = '';
+    $('portOut').append(
+      h('div', null, `port ${p} = 0x${hex(p, 4)}`),
+      h('div', null, `in x86 memory (little-endian):   ${hex(lo, 2)} ${hex(hi, 2)}`),
+      h('div', null, `on the wire (big-endian):        ${hex(hi, 2)} ${hex(lo, 2)}   ← htons(${p}) produces this`),
+      h('div', { class: 'bad' }, `forgot htons? the peer reads ${hex(lo, 2)} ${hex(hi, 2)} = port ${swapped}`));
+  }
+  $('port').addEventListener('input', updatePort);
+  updatePort();
+
+  /* ---------- 1.6 ---------- */
+  function updateAlign() {
+    const size = +$('alSize').value, box = +$('alBox').value;
+    const slider = $('alAddr');
+    slider.max = 128 - size;
+    const addr = Math.min(+slider.value, 128 - size);
+    $('alAddrV').textContent = addr;
+    const cells = $('alCells');
+    cells.innerHTML = '';
+    const perRow = 32;
+    cells.style.gridTemplateColumns = `repeat(${perRow}, minmax(16px, 1fr))`;
+    for (let i = 0; i < 128; i++) {
+      let cls = 'cell';
+      if (i >= addr && i < addr + size) cls += ' hl';
+      if (i % box === 0 && i % perRow !== 0) cls += ' boxstart';
+      if (i === 64) cls = cls.replace(' boxstart', '') + ' lineb';
+      cells.append(h('div', { class: cls, title: 'byte ' + i, style: 'font-size:9px' }, i % box === 0 ? String(i) : ''));
+    }
+    const boxes = Math.floor((addr + size - 1) / box) - Math.floor(addr / box) + 1;
+    const lines = Math.floor((addr + size - 1) / 64) - Math.floor(addr / 64) + 1;
+    const aligned = addr % size === 0;
+    const st = $('alStats');
+    st.innerHTML = '';
+    st.append(
+      h('div', { class: 'stat' }, h('span', { class: 'k' }, `addr % ${size}`), h('span', { class: 'v ' + (aligned ? 'ok' : 'bad') }, String(addr % size) + (aligned ? ' aligned' : ' misaligned'))),
+      h('div', { class: 'stat' }, h('span', { class: 'k' }, 'boxes touched = trips'), h('span', { class: 'v ' + (boxes > 1 ? 'bad' : 'ok') }, String(boxes))),
+      h('div', { class: 'stat' }, h('span', { class: 'k' }, 'cache lines'), h('span', { class: 'v ' + (lines > 1 ? 'bad' : 'ok') }, String(lines))));
+  }
+  ['alSize', 'alBox'].forEach((id) => $(id).addEventListener('change', updateAlign));
+  $('alAddr').addEventListener('input', updateAlign);
+  updateAlign();
+
+  /* ---------- 1.7 ---------- */
+  const TYPES = { char: 1, short: 2, int: 4, double: 8, pointer: 8 };
+  const CTYPE = { char: 'char', short: 'short', int: 'int', double: 'double', pointer: 'void *' };
+  const COLORS = ['blue', 'pink', 'green', 'amber', 'purple', 'red'];
+  let fields = [];
+  let fieldSeq = 0;
+  const mkField = (type) => ({ type, name: String.fromCharCode(97 + (fieldSeq++ % 26)), color: COLORS[fields.length % COLORS.length] });
+  function preset(types) { fields = []; fieldSeq = 0; types.forEach((t) => fields.push(mkField(t))); updateStruct(); }
+  function layout() {
+    let off = 0, maxA = 1;
+    const placed = [];
+    for (const f of fields) {
+      const a = TYPES[f.type];
+      maxA = Math.max(maxA, a);
+      const pad = (a - (off % a)) % a;
+      off += pad;
+      placed.push({ f, off, size: a, padBefore: pad });
+      off += a;
+    }
+    const tail = (maxA - (off % maxA)) % maxA;
+    return { placed, size: off + tail, tail, maxA };
+  }
+  function updateStruct() {
+    const L = layout();
+    $('stCode').textContent = 'struct S {\n' + fields.map((f) => `    ${CTYPE[f.type].padEnd(7)} ${f.name};`).join('\n') + (fields.length ? '\n' : '') + '};';
+    const list = $('stFields');
+    list.innerHTML = '';
+    fields.forEach((f, i) => {
+      list.append(h('div', { class: 'field' },
+        h('span', { class: 'sw', style: `background: var(--c-${f.color})` }),
+        h('span', { style: 'min-width:110px' }, `${f.name}: ${f.type} (${TYPES[f.type]})`),
+        h('button', { type: 'button', 'aria-label': 'move up', onclick: () => { if (i > 0) { [fields[i - 1], fields[i]] = [fields[i], fields[i - 1]]; updateStruct(); } } }, '↑'),
+        h('button', { type: 'button', 'aria-label': 'move down', onclick: () => { if (i < fields.length - 1) { [fields[i + 1], fields[i]] = [fields[i], fields[i + 1]]; updateStruct(); } } }, '↓'),
+        h('button', { type: 'button', 'aria-label': 'remove', onclick: () => { fields.splice(i, 1); updateStruct(); } }, '✕')));
+    });
+    const owner = new Array(L.size).fill(null);
+    L.placed.forEach((p) => { for (let b = 0; b < p.size; b++) owner[p.off + b] = p; });
+    const grid = $('stGrid');
+    grid.innerHTML = '';
+    for (let row = 0; row < Math.max(1, Math.ceil(L.size / 8)); row++) {
+      grid.append(h('div', { class: 'off' }, '+' + row * 8));
+      for (let c = 0; c < 8; c++) {
+        const i = row * 8 + c;
+        if (i >= L.size) { grid.append(h('div')); continue; }
+        const p = owner[i];
+        if (p) grid.append(h('div', { class: 'cell', style: `background: var(--c-${p.f.color}-soft); border-color: var(--c-${p.f.color})`, title: `${p.f.name} @ offset ${p.off}` }, i === p.off ? p.f.name : ''));
+        else grid.append(h('div', { class: 'cell pad', title: 'padding' }));
+      }
+    }
+    const used = fields.reduce((s, f) => s + TYPES[f.type], 0);
+    const st = $('stStats');
+    st.innerHTML = '';
+    st.append(
+      h('div', { class: 'stat' }, h('span', { class: 'k' }, 'sizeof'), h('span', { class: 'v' }, String(L.size))),
+      h('div', { class: 'stat' }, h('span', { class: 'k' }, 'data bytes'), h('span', { class: 'v' }, String(used))),
+      h('div', { class: 'stat' }, h('span', { class: 'k' }, 'padding'), h('span', { class: 'v ' + (L.size - used ? 'bad' : 'ok') }, String(L.size - used))),
+      h('div', { class: 'stat' }, h('span', { class: 'k' }, 'alignment'), h('span', { class: 'v' }, String(L.maxA))));
+  }
+  document.querySelectorAll('[data-add]').forEach((b) => b.addEventListener('click', () => { if (fields.length < 10) { fields.push(mkField(b.dataset.add)); updateStruct(); } }));
+  $('stBad').addEventListener('click', () => preset(['char', 'int', 'char']));
+  $('stGood').addEventListener('click', () => preset(['int', 'char', 'char']));
+  $('stSort').addEventListener('click', () => { fields.sort((a, b) => TYPES[b.type] - TYPES[a.type]); updateStruct(); });
+  preset(['char', 'double', 'short', 'int', 'char']);
+
+  /* ---------- 1.8 cache line click ---------- */
+  const clCells = $('clCells');
+  const clList = [];
+  for (let i = 0; i < 192; i++) {
+    const c = h('button', { class: 'cell', type: 'button', style: 'font-size:9px; padding:0; cursor:pointer', 'aria-label': 'byte ' + i }, String(i));
+    c.addEventListener('click', () => {
+      const line = Math.floor(i / 64);
+      clList.forEach((x, j) => { x.classList.toggle('line', Math.floor(j / 64) === line); x.classList.toggle('hl2', j === i); });
+      $('clOut').textContent = `You asked for byte ${i}. The CPU fetches line ${line}: bytes ${line * 64}–${line * 64 + 63}, all 64 at once.`;
+    });
+    clList.push(c);
+    clCells.append(c);
+  }
+  clList[100].click();
+
+  /* ---------- 1.8 matrix traversal ---------- */
+  const mx = $('mx');
+  const mxCells = [];
+  for (let r = 0; r < 8; r++) for (let c = 0; c < 8; c++) {
+    const cell = h('div', { class: 'cell' + (c === 4 ? ' gb' : ''), title: `a[${r}][${c}]` }, `${r}${c}`);
+    mxCells.push(cell);
+    mx.append(cell);
+  }
+  let mxTimer = null;
+  function runMatrix(order) {
+    clearInterval(mxTimer);
+    const seq = [];
+    for (let i = 0; i < 8; i++) for (let j = 0; j < 8; j++) seq.push(order === 'row' ? [i, j] : [j, i]);
+    let cache = [];               // LRU of line ids, most recent last
+    let hits = 0, miss = 0, k = 0;
+    mxCells.forEach((c) => c.className = c.className.replace(/ (cached|hit|miss)/g, ''));
+    $('mxHits').textContent = 0; $('mxMiss').textContent = 0;
+    $('mxRow').classList.toggle('primary', order === 'row');
+    $('mxCol').classList.toggle('primary', order === 'col');
+    const step = () => {
+      if (k >= seq.length) { clearInterval(mxTimer); return; }
+      const [r, c] = seq[k++];
+      const idx = r * 8 + c, line = Math.floor(idx / 4);
+      const pos = cache.indexOf(line);
+      let isHit = pos !== -1;
+      if (isHit) { cache.splice(pos, 1); hits++; } else { miss++; if (cache.length >= 4) cache.shift(); }
+      cache.push(line);
+      mxCells.forEach((cell, i) => {
+        cell.classList.remove('hit', 'miss');
+        cell.classList.toggle('cached', cache.includes(Math.floor(i / 4)));
+      });
+      mxCells[idx].classList.add(isHit ? 'hit' : 'miss');
+      $('mxHits').textContent = hits; $('mxMiss').textContent = miss;
+    };
+    mxTimer = setInterval(step, 420 - +$('mxSpeed').value);
+  }
+  $('mxRow').addEventListener('click', () => runMatrix('row'));
+  $('mxCol').addEventListener('click', () => runMatrix('col'));
+
+  /* ---------- 1.8 false sharing ---------- */
+  let fsPadded = false, fsTimer = null;
+  function fsReset() {
+    clearInterval(fsTimer);
+    $('fsSame').classList.toggle('primary', !fsPadded);
+    $('fsPad').classList.toggle('primary', fsPadded);
+    const lay = $('fsLayout');
+    lay.innerHTML = '';
+    if (!fsPadded) {
+      lay.append(h('div', { style: 'flex:1; background: var(--c-blue-soft)' }, 'A'), h('div', { style: 'flex:1; background: var(--c-pink-soft)' }, 'B'),
+                 h('div', { style: 'flex:6; background: var(--surface-2)' }, 'one 64-byte line'));
+    } else {
+      lay.append(h('div', { style: 'flex:1; background: var(--c-blue-soft)' }, 'A'), h('div', { style: 'flex:7; background: var(--surface-2); border-right:3px solid var(--c-red)' }, 'line 0 (padding)'),
+                 h('div', { style: 'flex:1; background: var(--c-pink-soft)' }, 'B'), h('div', { style: 'flex:7; background: var(--surface-2)' }, 'line 1 (padding)'));
+    }
+    $('fsCount').textContent = 0;
+    $('core0s').innerHTML = '<span class="state none">line not cached</span>';
+    $('core1s').innerHTML = '<span class="state none">line not cached</span>';
+  }
+  function fsPlay() {
+    fsReset();
+    const state = [{}, {}];          // per core: lineId -> 'M'|'I'
+    let n = 0, transfers = 0;
+    fsTimer = setInterval(() => {
+      if (n >= 20) { clearInterval(fsTimer); return; }
+      const core = n % 2, other = 1 - core;
+      const line = fsPadded ? core : 0;
+      if (state[core][line] !== 'M') {
+        if (state[other][line] === 'M') { transfers++; $('core' + core).classList.add('flash'); setTimeout(() => $('core' + core).classList.remove('flash'), 180); }
+        state[other][line] = state[other][line] ? 'I' : undefined;
+        state[core][line] = 'M';
+      }
+      [0, 1].forEach((c) => {
+        const box = $('core' + c + 's');
+        box.innerHTML = '';
+        const lines = Object.keys(state[c]).filter((l) => state[c][l]);
+        if (!lines.length) box.innerHTML = '<span class="state none">line not cached</span>';
+        lines.forEach((l) => box.append(h('span', { class: 'state ' + state[c][l], style: 'margin-right:6px' }, `line ${l}: ${state[c][l] === 'M' ? 'Modified' : 'Invalid'}`)));
+      });
+      $('fsCount').textContent = transfers;
+      n++;
+    }, 260);
+  }
+  $('fsSame').addEventListener('click', () => { fsPadded = false; fsReset(); });
+  $('fsPad').addEventListener('click', () => { fsPadded = true; fsReset(); });
+  $('fsPlay').addEventListener('click', fsPlay);
+  fsReset();
+
+  /* ---------- 1.9 ---------- */
+  let v9 = 0b11111011;
+  const s8 = (v) => (v & 0x80 ? v - 256 : v);
+  const draw9 = bitRow($('b9'), 8, () => v9, (v) => { v9 = v; $('b9steps').textContent = ''; update9(); }, (i) => (i === 7 ? '−128' : String(1 << i)));
+  function update9() {
+    draw9();
+    const signBtn = $('b9').firstChild.firstChild;
+    signBtn.style.boxShadow = '0 0 0 2px var(--c-pink)';
+    $('b9u').textContent = v9;
+    $('b9s').textContent = s8(v9);
+  }
+  $('b9neg').addEventListener('click', () => {
+    const inv = (~v9) & 255, neg = (inv + 1) & 255;
+    $('b9steps').textContent =
+      `  x      = ${bin(v9, 8)}   (${s8(v9)})\n  ~x     = ${bin(inv, 8)}   (invert every bit)\n  ~x + 1 = ${bin(neg, 8)}   (${s8(neg)})` +
+      (v9 === 128 ? '\n  -(-128) overflows back to -128: there is no +128 in 8 bits!' : '');
+    v9 = neg;
+    update9();
+  });
+  update9();
+
+  // wheel
+  let wv = 6;
+  const svg = $('wheel');
+  const NS = 'http://www.w3.org/2000/svg';
+  const sv = (tag, attrs, text) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (text != null) e.textContent = text; return e; };
+  const cx = 130, cy = 130;
+  const pos = (i, r) => { const a = (i / 16) * 2 * Math.PI - Math.PI / 2; return [cx + r * Math.cos(a), cy + r * Math.sin(a)]; };
+  function drawWheel(prev) {
+    svg.innerHTML = '';
+    svg.append(sv('circle', { cx, cy, r: 120, fill: 'none', stroke: 'var(--border)', 'stroke-width': 1 }));
+    svg.append(sv('circle', { cx, cy, r: 84, fill: 'none', stroke: 'var(--border)', 'stroke-width': 1, 'stroke-dasharray': '3 3' }));
+    const [ax, ay] = pos(7.5, 124), [bx, by] = pos(7.5, 40);
+    svg.append(sv('line', { x1: ax, y1: ay, x2: bx, y2: by, stroke: 'var(--c-red)', 'stroke-width': 2, 'stroke-dasharray': '4 3' }));
+    const [ux, uy] = pos(15.5, 124), [vx, vy] = pos(15.5, 40);
+    svg.append(sv('line', { x1: ux, y1: uy, x2: vx, y2: vy, stroke: 'var(--c-amber)', 'stroke-width': 2, 'stroke-dasharray': '4 3' }));
+    for (let i = 0; i < 16; i++) {
+      const [x, y] = pos(i, 102), [x2, y2] = pos(i, 64);
+      const cur = i === wv;
+      if (cur) svg.append(sv('circle', { cx: x, cy: y, r: 15, fill: 'var(--accent)' }));
+      svg.append(sv('text', { x, y: y + 5, 'text-anchor': 'middle', 'font-size': 14, 'font-weight': cur ? 700 : 400, fill: cur ? '#fff' : 'var(--c-blue)' }, String(i)));
+      svg.append(sv('text', { x: x2, y: y2 + 4, 'text-anchor': 'middle', 'font-size': 12, 'font-weight': cur ? 700 : 400, fill: 'var(--c-pink)' }, String(i > 7 ? i - 16 : i)));
+    }
+    svg.append(sv('text', { x: cx, y: cy + 4, 'text-anchor': 'middle', 'font-size': 13, fill: 'var(--muted)' }, bin(wv, 4)));
+    $('whVal').textContent = `${bin(wv, 4)} = ${wv} unsigned = ${wv > 7 ? wv - 16 : wv} signed`;
+    const msg = $('whMsg');
+    msg.textContent = '';
+    msg.className = '';
+    if (prev === 7 && wv === 8) { msg.textContent = 'Signed overflow! 7 + 1 → −8 (in C: undefined behavior)'; msg.className = 'bad'; }
+    else if (prev === 8 && wv === 7) { msg.textContent = 'Signed overflow! −8 − 1 → 7'; msg.className = 'bad'; }
+    else if (prev === 15 && wv === 0) { msg.textContent = 'Unsigned wraparound: 15 + 1 → 0 (well defined, modulo 16)'; msg.className = 'warn'; }
+    else if (prev === 0 && wv === 15) { msg.textContent = 'Unsigned wraparound: 0 − 1 → 15'; msg.className = 'warn'; }
+  }
+  $('whInc').addEventListener('click', () => { const p = wv; wv = (wv + 1) & 15; drawWheel(p); });
+  $('whDec').addEventListener('click', () => { const p = wv; wv = (wv + 15) & 15; drawWheel(p); });
+  drawWheel();
+
+  /* ---------- 1.10 ---------- */
+  let flWidth = 64;
+  function exactDecimal(x) {
+    if (Number.isNaN(x)) return 'NaN';
+    if (!Number.isFinite(x)) return x > 0 ? 'Infinity' : '-Infinity';
+    const dv = new DataView(new ArrayBuffer(8));
+    dv.setFloat64(0, x);
+    const bits = dv.getBigUint64(0);
+    const neg = bits >> 63n ? '-' : '';
+    const e = Number((bits >> 52n) & 0x7ffn);
+    const f = bits & ((1n << 52n) - 1n);
+    let m, p;
+    if (e === 0) { m = f; p = -1074; } else { m = f | (1n << 52n); p = e - 1075; }
+    if (m === 0n) return neg + '0';
+    if (p >= 0) return neg + (m << BigInt(p)).toString();
+    const k = -p;
+    const s = (m * 5n ** BigInt(k)).toString().padStart(k + 1, '0');
+    const ip = s.slice(0, s.length - k), fp = s.slice(s.length - k).replace(/0+$/, '');
+    return neg + ip + (fp ? '.' + fp : '');
+  }
+  function floatBits(x) {
+    const dv = new DataView(new ArrayBuffer(8));
+    if (flWidth === 32) { dv.setFloat32(0, x); return dv.getUint32(0).toString(2).padStart(32, '0'); }
+    dv.setFloat64(0, x); return dv.getBigUint64(0).toString(2).padStart(64, '0');
+  }
+  function fromBits(s) {
+    const dv = new DataView(new ArrayBuffer(8));
+    if (flWidth === 32) { dv.setUint32(0, parseInt(s, 2) >>> 0); return dv.getFloat32(0); }
+    dv.setBigUint64(0, BigInt('0b' + s)); return dv.getFloat64(0);
+  }
+  function parseNum(t) {
+    t = t.trim();
+    if (/^-?inf(inity)?$/i.test(t)) return t.startsWith('-') ? -Infinity : Infinity;
+    if (/^nan$/i.test(t)) return NaN;
+    if (t === '-0') return -0;
+    const v = Number(t);
+    return t === '' || Number.isNaN(v) ? null : v;
+  }
+  function updateFloat(fromBitsStr) {
+    let x;
+    if (fromBitsStr) { x = fromBits(fromBitsStr); $('fl').value = Object.is(x, -0) ? '-0' : String(x); }
+    else { x = parseNum($('fl').value); if (x === null) return; }
+    if (flWidth === 32) x = Math.fround(x);
+    const b = floatBits(x);
+    const E = flWidth === 32 ? 8 : 11, bias = flWidth === 32 ? 127 : 1023;
+    const box = $('flBits');
+    box.innerHTML = '';
+    [...b].forEach((ch, i) => {
+      const kind = i === 0 ? 's' : i <= E ? 'e' : 'f';
+      if (i === 1 || i === E + 1) box.append(h('span', { class: 'sep' }));
+      box.append(h('button', { class: `bit ${kind}${ch === '1' ? ' on' : ''}`, type: 'button', 'aria-label': `bit ${b.length - 1 - i}`,
+        onclick: () => updateFloat(b.slice(0, i) + (ch === '1' ? '0' : '1') + b.slice(i + 1)) }, ch));
+    });
+    const sign = b[0], expBits = b.slice(1, E + 1), frac = b.slice(E + 1);
+    const expRaw = parseInt(expBits, 2);
+    let kind = 'normal';
+    if (expRaw === 0) kind = /1/.test(frac) ? 'subnormal' : 'zero';
+    else if (expRaw === (1 << E) - 1) kind = /1/.test(frac) ? 'NaN' : 'infinity';
+    const st = $('flStats');
+    st.innerHTML = '';
+    st.append(
+      h('div', { class: 'stat' }, h('span', { class: 'k' }, 'sign'), h('span', { class: 'v' }, sign === '1' ? '1 (−)' : '0 (+)')),
+      h('div', { class: 'stat' }, h('span', { class: 'k' }, 'exponent'), h('span', { class: 'v' }, kind === 'normal' ? `${expRaw} − ${bias} = ${expRaw - bias}` : `${expRaw} (${kind})`)),
+      h('div', { class: 'stat' }, h('span', { class: 'k' }, 'kind'), h('span', { class: 'v' }, kind)));
+    let formula = '';
+    if (kind === 'normal') formula = `(−1)^${sign} × 1.${frac.replace(/0+$/, '') || '0'}₂ × 2^${expRaw - bias}`;
+    else if (kind === 'subnormal') formula = `(−1)^${sign} × 0.${frac.replace(/0+$/, '')}₂ × 2^${1 - bias}   (no hidden 1)`;
+    else if (kind === 'zero') formula = sign === '1' ? 'negative zero: equals +0, but 1/−0 = −∞' : 'zero: all exponent and fraction bits are 0';
+    else if (kind === 'infinity') formula = 'exponent all 1s, fraction 0 → infinity';
+    else formula = 'exponent all 1s, fraction ≠ 0 → NaN (and NaN != NaN)';
+    $('flFormula').textContent = formula;
+    $('flExact').textContent = exactDecimal(x);
+  }
+  $('fl').addEventListener('input', () => updateFloat());
+  document.querySelectorAll('[data-fl]').forEach((b) => b.addEventListener('click', () => { $('fl').value = b.dataset.fl; updateFloat(); }));
+  $('fl32').addEventListener('click', () => { flWidth = 32; $('fl32').classList.add('primary'); $('fl64').classList.remove('primary'); updateFloat(); });
+  $('fl64').addEventListener('click', () => { flWidth = 64; $('fl64').classList.add('primary'); $('fl32').classList.remove('primary'); updateFloat(); });
+  updateFloat();
+
+  const sum = 0.1 + 0.2;
+  $('flSum').append(
+    h('div', null, '0.1       is stored as ', h('b', null, exactDecimal(0.1))),
+    h('div', null, '0.2       is stored as ', h('b', null, exactDecimal(0.2))),
+    h('div', null, '0.1 + 0.2 rounds to    ', h('b', { class: 'bad' }, exactDecimal(sum))),
+    h('div', null, '0.3       is stored as ', h('b', { class: 'ok' }, exactDecimal(0.3))),
+    h('div', { class: 'hint' }, `Two different doubles, so 0.1 + 0.2 == 0.3 is ${sum === 0.3}. Printed with 17 significant digits: ${sum.toPrecision(17)} vs ${(0.3).toPrecision(17)}.`));
+
+  /* ---------- 1.11 ---------- */
+  const enc = new TextEncoder();
+  function updateUtf8() {
+    const s = $('u8').value;
+    const cps = Array.from(s);
+    const bytes = enc.encode(s);
+    const st = $('u8Stats');
+    st.innerHTML = '';
+    st.append(
+      h('div', { class: 'stat' }, h('span', { class: 'k' }, 'code points'), h('span', { class: 'v' }, String(cps.length))),
+      h('div', { class: 'stat' }, h('span', { class: 'k' }, 'UTF-8 bytes (strlen)'), h('span', { class: 'v' }, String(bytes.length))),
+      h('div', { class: 'stat' }, h('span', { class: 'k' }, 'UTF-16 units (JS .length)'), h('span', { class: 'v' }, String(s.length))));
+    const box = $('u8Cps');
+    box.innerHTML = '';
+    cps.slice(0, 40).forEach((ch) => {
+      const cp = ch.codePointAt(0);
+      const bs = [...enc.encode(ch)];
+      const lines = bs.map((b, i) => {
+        const bitsStr = bin(b, 8);
+        const preLen = bs.length === 1 ? 1 : (i === 0 ? bs.length + 1 : 2);
+        return h('div', null, h('span', { class: 'pre' }, bitsStr.slice(0, preLen)), h('span', { class: 'pay' }, bitsStr.slice(preLen)), '  ', h('span', { class: 'hexb' }, hex(b, 2)));
+      });
+      const shown = cp === 0x200d ? '(ZWJ)' : cp === 0x20 ? '␠' : ch;
+      box.append(h('div', { class: 'cp' },
+        h('div', { class: 'ch' }, shown),
+        h('div', { class: 'u' }, 'U+' + hex(cp, 4) + `  · ${bs.length} byte${bs.length > 1 ? 's' : ''}`),
+        h('div', { class: 'bytes' }, lines)));
+    });
+    if (cps.length > 40) box.append(h('div', { class: 'hint' }, `…and ${cps.length - 40} more`));
+  }
+  $('u8').addEventListener('input', updateUtf8);
+  document.querySelectorAll('[data-u8]').forEach((b) => b.addEventListener('click', () => { $('u8').value = b.dataset.u8; updateUtf8(); }));
+  updateUtf8();
+})();
+</script>
+</body>
+</html>

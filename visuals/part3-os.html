@@ -1,0 +1,825 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Operating System Fundamentals, Visualized</title>
+<meta name="description" content="Interactive visuals for Part 3 of System Internals: kernel designs, user vs kernel space, system calls, interrupts, mode vs context switches, the scheduler, boot, and clocks.">
+<script>
+  (function () {
+    var saved = null;
+    try { saved = localStorage.getItem('theme'); } catch (e) {}
+    var dark = saved ? saved === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches;
+    document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+  })();
+</script>
+<style>
+  :root {
+    --bg: #ffffff; --surface: #f6f8fa; --surface-2: #eaeef2; --text: #1f2328; --muted: #59636e;
+    --border: #d0d7de; --accent: #0969da; --accent-soft: #ddf4ff;
+    --c-blue: #0969da; --c-pink: #bf3989; --c-green: #1a7f37; --c-amber: #9a6700; --c-purple: #8250df; --c-red: #cf222e;
+    --c-blue-soft: #ddf4ff; --c-pink-soft: #ffeff7; --c-green-soft: #dafbe1; --c-amber-soft: #fff8c5; --c-purple-soft: #fbefff; --c-red-soft: #ffebe9;
+    --hatch: repeating-linear-gradient(45deg, transparent 0 4px, rgba(130,80,223,.22) 4px 7px);
+    --radius: 8px;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  html[data-theme="dark"] {
+    --bg: #0d1117; --surface: #151b23; --surface-2: #212830; --text: #e6edf3; --muted: #9198a1;
+    --border: #3d444d; --accent: #4493f8; --accent-soft: rgba(56,139,253,.15);
+    --c-blue: #4493f8; --c-pink: #f778ba; --c-green: #3fb950; --c-amber: #d29922; --c-purple: #ab7df8; --c-red: #f85149;
+    --c-blue-soft: rgba(56,139,253,.18); --c-pink-soft: rgba(247,120,186,.16); --c-green-soft: rgba(63,185,80,.16);
+    --c-amber-soft: rgba(210,153,34,.18); --c-purple-soft: rgba(171,125,248,.18); --c-red-soft: rgba(248,81,73,.16);
+    --hatch: repeating-linear-gradient(45deg, transparent 0 4px, rgba(171,125,248,.30) 4px 7px);
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif; }
+  a { color: var(--accent); }
+  code, .mono { font-family: var(--mono); font-size: .92em; }
+  code { background: var(--surface-2); padding: .1em .35em; border-radius: 4px; }
+  header.top { max-width: 1040px; margin: 0 auto; padding: 32px 16px 8px; }
+  header.top h1 { margin: 0 0 6px; font-size: clamp(28px, 5vw, 40px); line-height: 1.15; }
+  header.top p { margin: 0 0 8px; color: var(--muted); max-width: 70ch; }
+  .backlink { font-size: 14px; }
+  nav.chips { position: sticky; top: 0; z-index: 10; background: var(--bg); border-bottom: 1px solid var(--border); }
+  nav.chips .inner { max-width: 1040px; margin: 0 auto; padding: 8px 16px; display: flex; gap: 6px; overflow-x: auto; scrollbar-width: thin; }
+  nav.chips a { flex: none; font-size: 13px; padding: 4px 10px; border: 1px solid var(--border); border-radius: 999px;
+                color: var(--text); text-decoration: none; background: var(--surface); white-space: nowrap; }
+  nav.chips a:hover, nav.chips a.active { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+  main { max-width: 1040px; margin: 0 auto; padding: 8px 16px 32px; }
+  section.card { border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin: 24px 0; background: var(--bg); scroll-margin-top: 56px; }
+  section.card > h2 { margin: 0 0 4px; font-size: 22px; }
+  section.card > h2 .num { color: var(--muted); font-weight: 500; margin-right: 6px; }
+  .lead { color: var(--muted); margin: 0 0 16px; max-width: 75ch; }
+  .demo { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; margin: 12px 0; overflow-x: auto; }
+  .demo h3 { margin: 0 0 10px; font-size: 15px; }
+  .row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+  .stack { display: flex; flex-direction: column; gap: 10px; }
+  .connect { font-size: 14px; color: var(--muted); border-left: 3px solid var(--accent); padding: 4px 0 4px 10px; margin-top: 14px; }
+  .hint { font-size: 13px; color: var(--muted); }
+  .big { font-family: var(--mono); font-size: 20px; font-weight: 600; }
+  .stat { display: inline-flex; flex-direction: column; padding: 6px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg); min-width: 90px; }
+  .stat .k { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  .stat .v { font-family: var(--mono); font-size: 18px; font-weight: 600; }
+  .ok { color: var(--c-green); } .bad { color: var(--c-red); } .warn { color: var(--c-amber); }
+  button, select, input[type="text"], input[type="number"] {
+    font: inherit; font-size: 14px; color: var(--text); background: var(--bg);
+    border: 1px solid var(--border); border-radius: 6px; padding: 5px 10px;
+  }
+  button { cursor: pointer; }
+  button:hover { background: var(--surface-2); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover { filter: brightness(1.08); background: var(--accent); }
+  button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  input[type="range"] { accent-color: var(--accent); width: min(300px, 100%); }
+  label.inline { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 13px; color: var(--muted); }
+  .legend span::before { content: ""; display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 5px; vertical-align: -2px; background: var(--sw); border: 1px solid var(--border); }
+  .bar { height: 28px; border-radius: 6px; display: flex; overflow: hidden; border: 1px solid var(--border); font-size: 12px; }
+  .bar > div { display: flex; align-items: center; justify-content: center; color: var(--text); white-space: nowrap; overflow: hidden; padding: 0 4px; }
+  table.mem { border-collapse: collapse; font-family: var(--mono); font-size: 13px; }
+  table.mem th, table.mem td { border: 1px solid var(--border); padding: 4px 10px; text-align: left; }
+  table.mem th { background: var(--surface-2); font-weight: 600; font-family: inherit; }
+  table.mem tr.hl td { background: var(--accent-soft); }
+  .theme-btn { position: fixed; top: 10px; right: 12px; z-index: 20; width: 34px; height: 34px; padding: 0; font-size: 16px; }
+  footer.pager { max-width: 1040px; margin: 0 auto; padding: 0 16px 48px; display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; font-size: 14px; }
+
+  /* boxes / diagrams */
+  .box { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; background: var(--bg); font-size: 13px; text-align: center; transition: background .15s, box-shadow .15s; }
+  .box.lit { background: var(--accent); color: #fff; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .ring3 { background: var(--c-green-soft); } .ring0 { background: var(--c-purple-soft); }
+  .zone { border: 1px dashed var(--border); border-radius: 10px; padding: 8px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; justify-content: center; }
+  .zone .tag { width: 100%; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); text-align: left; }
+  .kdiag { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 720px) { .kdiag { grid-template-columns: 1fr; } }
+
+  /* stepper */
+  .stepper { display: grid; grid-template-columns: minmax(180px, 260px) 1fr; gap: 14px; }
+  @media (max-width: 680px) { .stepper { grid-template-columns: 1fr; } }
+  .stepper ol { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; counter-reset: s; }
+  .stepper li button { width: 100%; text-align: left; border-radius: 6px; font-size: 13px; padding: 6px 8px; }
+  .stepper li button::before { counter-increment: s; content: counter(s) ". "; color: var(--muted); }
+  .stepper li button.cur { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+  .stepper li button.done { color: var(--muted); }
+  .stepper .pane { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; min-height: 160px; }
+  .stepper .pane h4 { margin: 0 0 6px; font-size: 15px; }
+  .stepper .nav { display: flex; gap: 8px; margin-top: 10px; }
+
+  /* timeline lanes */
+  .lanes { display: grid; grid-template-columns: 110px 1fr; gap: 4px 8px; align-items: center; font-size: 12px; }
+  .lane { display: flex; height: 26px; border-bottom: 1px dashed var(--border); overflow: hidden; }
+  .seg { height: 22px; margin-top: 2px; border-radius: 4px; flex: none; display: flex; align-items: center; justify-content: center; font-size: 10px; color: #fff; overflow: hidden; white-space: nowrap; }
+  .seg.gap { background: transparent; }
+  .seg.user { background: var(--c-green); } .seg.kern { background: var(--c-purple); } .seg.userB { background: var(--c-blue); } .seg.irq { background: var(--c-red); } .seg.soft { background: var(--c-amber); }
+
+  /* scheduler */
+  .tasks { display: flex; flex-direction: column; gap: 6px; }
+  .task { display: grid; grid-template-columns: 70px 120px 1fr 120px; gap: 8px; align-items: center; font-size: 13px; }
+  .task .runbar { height: 14px; border-radius: 4px; background: var(--accent); }
+  .task.next .name { color: var(--accent); font-weight: 700; }
+  .ladder { display: flex; flex-direction: column; gap: 4px; max-width: 560px; }
+  .rung { display: grid; grid-template-columns: 26px 1fr auto; gap: 10px; align-items: center; border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; background: var(--bg); font-size: 13px; }
+  .rung.runs { border-color: var(--c-green); box-shadow: 0 0 0 2px var(--c-green-soft); }
+  .rung.blocked { opacity: .55; }
+  .cores { display: flex; gap: 8px; flex-wrap: wrap; }
+  .core { width: 80px; height: 54px; border: 1px solid var(--border); border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 12px; background: var(--bg); }
+  .core.busy { background: var(--c-green-soft); border-color: var(--c-green); font-weight: 600; }
+  .dq { display: flex; gap: 6px; flex-wrap: wrap; }
+  .dtask { padding: 3px 8px; border-radius: 999px; background: var(--c-amber-soft); border: 1px solid var(--c-amber); font-size: 12px; }
+
+  /* mbr */
+  .mbr { display: flex; height: 44px; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; font-size: 12px; max-width: 640px; }
+  .mbr > div { display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; line-height: 1.2; overflow: hidden; }
+
+  .code { font: 13px/1.6 var(--mono); background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; }
+  .code .ln { display: flex; gap: 10px; }
+  .code .arrow { width: 70px; color: var(--accent); font-weight: 700; }
+  .clock { font: 600 22px var(--mono); }
+  @media (max-width: 600px) { section.card { padding: 14px; } .task { grid-template-columns: 60px 100px 1fr; } .task .share { display: none; } }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+</head>
+<body>
+<button class="theme-btn" id="themeBtn" type="button" aria-label="Toggle dark mode"></button>
+
+<header class="top">
+  <a class="backlink" href="../#3-operating-system-fundamentals">← Back to the notes: Part 3</a>
+  <h1>Operating System Fundamentals, Visualized</h1>
+  <p>Watch requests cross the user/kernel boundary, step through a system call and the boot sequence, run a tiny scheduler, and break a wall clock.</p>
+</header>
+
+<nav class="chips" aria-label="Sections"><div class="inner" id="chips"></div></nav>
+
+<main>
+
+<!-- 3.1 -->
+<section class="card" id="s3-1" data-title="3.1 Kernel">
+  <h2><span class="num">3.1</span>Kernel: Monolithic vs Microkernel</h2>
+  <p class="lead">Where do the filesystem and the drivers live? In Linux they're part of one kernel address space; in a microkernel they're separate user processes that talk through IPC. Send one <code>read()</code> through each and count the boundary crossings.</p>
+  <div class="demo">
+    <div class="row"><button type="button" class="primary" id="kRun">▶ Send a read() request through both</button></div>
+    <div class="kdiag" style="margin-top:14px">
+      <div class="stack">
+        <b>Monolithic (Linux)</b>
+        <div class="zone ring3"><span class="tag">ring 3</span><div class="box" id="m-app">app</div></div>
+        <div class="zone ring0"><span class="tag">ring 0: one kernel address space</span>
+          <div class="box" id="m-vfs">VFS</div><div class="box" id="m-fs">ext4</div><div class="box" id="m-drv">NVMe driver</div></div>
+        <div class="row"><div class="stat"><span class="k">boundary crossings</span><span class="v" id="mCross">0</span></div><div class="stat"><span class="k">IPC messages</span><span class="v" id="mMsg">0</span></div></div>
+      </div>
+      <div class="stack">
+        <b>Microkernel (seL4, QNX, MINIX 3)</b>
+        <div class="zone ring3"><span class="tag">ring 3: servers are processes</span>
+          <div class="box" id="u-app">app</div><div class="box" id="u-fs">FS server</div><div class="box" id="u-drv">driver server</div></div>
+        <div class="zone ring0"><span class="tag">ring 0</span><div class="box" id="u-k">tiny kernel: IPC, scheduling, memory</div></div>
+        <div class="row"><div class="stat"><span class="k">boundary crossings</span><span class="v" id="uCross">0</span></div><div class="stat"><span class="k">IPC messages</span><span class="v" id="uMsg">0</span></div></div>
+      </div>
+    </div>
+    <p class="hint" id="kNote" style="margin:10px 0 0">Simplified: real paths have more steps, but the shape is the point. Monolithic = function calls inside the kernel; microkernel = a message plus a context switch for every hop.</p>
+  </div>
+  <div class="demo">
+    <h3>Kernel modules: plug in a USB stick</h3>
+    <div class="stepper" id="modStepper"></div>
+  </div>
+  <div class="connect">Connection: udev (7.12) loads modules automatically; the initramfs (3.7) carries the modules needed to mount root; containers drop <code>CAP_SYS_MODULE</code> (10.4).</div>
+</section>
+
+<!-- 3.2 -->
+<section class="card" id="s3-2" data-title="3.2 User vs kernel">
+  <h2><span class="num">3.2</span>User Space vs Kernel Space</h2>
+  <p class="lead">Code running in Ring 3 can only do some things. Try them and see what the CPU and kernel do.</p>
+  <div class="demo">
+    <div class="bar" style="max-width:640px">
+      <div style="flex:1; background: var(--c-green-soft)">user space (ring 3): code, data, heap, stack, libraries</div>
+      <div style="flex:1; background: var(--c-purple-soft)">kernel space (ring 0): mapped supervisor-only</div>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <button type="button" data-try="read">read my own variable</button>
+      <button type="button" data-try="kread">read a kernel address</button>
+      <button type="button" data-try="hlt">execute <code>hlt</code></button>
+      <button type="button" data-try="cr3">write <code>CR3</code></button>
+      <button type="button" data-try="sys">call <code>write()</code></button>
+    </div>
+    <div class="code" id="tryOut" style="margin-top:12px; min-height:5.5em"></div>
+  </div>
+  <div class="connect">Connection: the U/S bit in each page-table entry (6.3) and the CPL bits in <code>CS</code> (2.6) are what enforce this, in hardware.</div>
+</section>
+
+<!-- 3.3 -->
+<section class="card" id="s3-3" data-title="3.3 System calls">
+  <h2><span class="num">3.3</span>System Calls: the Journey of <code>write(1, "hi\n", 3)</code></h2>
+  <p class="lead">Step through what happens from the libc wrapper to the kernel and back. Registers update at each step. Switch on the error case to pass a bad fd.</p>
+  <div class="demo">
+    <label class="inline"><input type="checkbox" id="sysErr"> use a bad fd (9) → <code>-EBADF</code></label>
+    <div class="row" style="margin:12px 0; align-items:flex-start">
+      <table class="mem" id="regs"></table>
+      <div class="stat"><span class="k">CPU mode</span><span class="v" id="sysMode">ring 3</span></div>
+    </div>
+    <div class="stepper" id="sysStepper"></div>
+  </div>
+  <div class="demo">
+    <h3>What does crossing cost? (approximate, from the notes)</h3>
+    <div id="costBars" class="stack" style="max-width:640px"></div>
+    <p class="hint" style="margin:8px 0 0">With KPTI, each syscall also switches page tables (CR3), so it gets slower still; PCID keeps the TLB from being flushed every time.</p>
+  </div>
+  <div class="connect">Connection: syscall arguments are registers (2.3); the return path is where pending signals are delivered (8.1) and the scheduler may run (3.6); seccomp filters sit on this entry path (10.4).</div>
+</section>
+
+<!-- 3.4 -->
+<section class="card" id="s3-4" data-title="3.4 Interrupts">
+  <h2><span class="num">3.4</span>Interrupts and Exceptions</h2>
+  <p class="lead">Exceptions are caused by the current instruction; interrupts arrive from devices at any time. Both go through the IDT.</p>
+  <div class="demo">
+    <h3>Faults vs traps vs aborts: where does execution resume?</h3>
+    <div class="row">
+      <button type="button" data-ex="fault" class="primary">Fault (page fault on line 2)</button>
+      <button type="button" data-ex="trap">Trap (int3 on line 2)</button>
+      <button type="button" data-ex="abort">Abort (machine check)</button>
+    </div>
+    <div class="code" id="exCode" style="margin-top:12px"></div>
+    <p id="exOut" style="margin:8px 0 0; font-weight:600"></p>
+  </div>
+  <div class="demo">
+    <h3>IDT lookup: which handler runs for vector N?</h3>
+    <div class="row">
+      <label class="inline">vector <input type="number" id="vec" min="0" max="255" value="14" style="width:80px"></label>
+      <button type="button" data-vec="0">0</button><button type="button" data-vec="3">3</button><button type="button" data-vec="6">6</button>
+      <button type="button" data-vec="13">13</button><button type="button" data-vec="14">14</button><button type="button" data-vec="40">40</button><button type="button" data-vec="128">0x80</button>
+    </div>
+    <p class="big" id="vecOut" style="margin:10px 0 0"></p>
+    <p class="hint" id="vecSub" style="margin:4px 0 0"></p>
+  </div>
+  <div class="demo">
+    <h3>A network packet arrives: top half and bottom half</h3>
+    <div class="row">
+      <button type="button" id="irqGo" class="primary">▶ Packet arrives</button>
+      <label class="inline"><input type="checkbox" id="irqFlood"> heavy load (flood)</label>
+    </div>
+    <div class="lanes" id="irqLanes" style="margin-top:12px"></div>
+    <p class="hint" id="irqNote" style="margin:8px 0 0"></p>
+  </div>
+  <div class="connect">Connection: page faults (6.5) are restartable faults; exceptions become signals like SIGSEGV and SIGFPE (8.2); NAPI turns per-packet interrupts into polling under load (9.5).</div>
+</section>
+
+<!-- 3.5 -->
+<section class="card" id="s3-5" data-title="3.5 Mode vs context">
+  <h2><span class="num">3.5</span>Mode Switch vs Context Switch</h2>
+  <p class="lead">A mode switch changes privilege, same task. A context switch changes which task runs. Build a timeline and watch the counters.</p>
+  <div class="demo">
+    <div class="row">
+      <button type="button" data-ev="getpid">A calls getpid()</button>
+      <button type="button" data-ev="block">A calls read() and blocks</button>
+      <button type="button" data-ev="wake">disk interrupt wakes A</button>
+      <button type="button" data-ev="tick">timer: B's slice expired</button>
+      <button type="button" data-ev="reset">reset</button>
+    </div>
+    <div class="lanes" id="csLanes" style="margin-top:12px"></div>
+    <div class="row" style="margin-top:10px">
+      <div class="stat"><span class="k">mode switches</span><span class="v" id="csMode">0</span></div>
+      <div class="stat"><span class="k">context switches</span><span class="v" id="csCtx">0</span></div>
+      <div class="stat"><span class="k">voluntary</span><span class="v" id="csVol">0</span></div>
+      <div class="stat"><span class="k">involuntary</span><span class="v" id="csInv">0</span></div>
+    </div>
+    <p class="hint" id="csNote" style="margin:8px 0 0">Running: task A (user mode).</p>
+    <div class="legend" style="margin-top:6px"><span style="--sw: var(--c-green)">task A, user</span><span style="--sw: var(--c-blue)">task B, user</span><span style="--sw: var(--c-purple)">kernel</span><span style="--sw: var(--c-red)">interrupt</span></div>
+  </div>
+  <div class="connect">Connection: <code>/proc/&lt;pid&gt;/status</code> shows <code>voluntary_ctxt_switches</code> and <code>nonvoluntary_ctxt_switches</code>; switching between threads of one process skips the CR3 change (5.1).</div>
+</section>
+
+<!-- 3.6 -->
+<section class="card" id="s3-6" data-title="3.6 Scheduler">
+  <h2><span class="num">3.6</span>Scheduler: Virtual Runtime in Action</h2>
+  <p class="lead">Each task's <code>vruntime</code> grows as it runs, scaled by its weight (from its nice value). The scheduler always picks the smallest. Simplified CFS-style model: fixed 4 ms slices; EEVDF adds virtual deadlines on top of this idea.</p>
+  <div class="demo">
+    <div class="row">
+      <button type="button" id="schStep" class="primary">Step (run one slice)</button>
+      <button type="button" id="schRun">Run 100 slices</button>
+      <button type="button" id="schAdd">+ add task</button>
+      <button type="button" id="schReset">reset</button>
+    </div>
+    <p class="hint" style="margin:10px 0 6px">Sorted by vruntime, like the red-black tree. The top row is the leftmost node: it runs next.</p>
+    <div class="tasks" id="schTasks"></div>
+    <p class="mono hint" id="schLog" style="margin:10px 0 0"></p>
+  </div>
+  <div class="demo">
+    <h3>Scheduling classes: the highest class with a runnable task wins</h3>
+    <div class="ladder" id="ladder"></div>
+  </div>
+  <div class="demo">
+    <h3>Load average on a 4-core machine (counts R and D tasks)</h3>
+    <div class="row">
+      <button type="button" data-ld="r+">+ CPU-bound task (R)</button><button type="button" data-ld="r-">− R</button>
+      <button type="button" data-ld="d+">+ task stuck on disk (D)</button><button type="button" data-ld="d-">− D</button>
+      <button type="button" data-ld="min" class="primary">▶ advance 1 minute</button>
+    </div>
+    <div class="row" style="margin-top:12px; align-items:flex-start">
+      <div class="stack"><span class="hint">CPU cores</span><div class="cores" id="ldCores"></div></div>
+      <div class="stack"><span class="hint">waiting on disk (D)</span><div class="dq" id="ldD"></div></div>
+    </div>
+    <div class="row" style="margin-top:12px" id="ldStats"></div>
+    <p class="hint" id="ldNote" style="margin:8px 0 0"></p>
+  </div>
+  <div class="connect">Connection: the scheduler's inputs live in <code>task_struct</code> (4.2); its output is a context switch (3.5); cgroups (10.2) nest fair shares so one container can't starve another.</div>
+</section>
+
+<!-- 3.7 -->
+<section class="card" id="s3-7" data-title="3.7 Boot">
+  <h2><span class="num">3.7</span>Boot: From Power-On to a Login Prompt</h2>
+  <p class="lead">Each stage's only job is to load the next, bigger stage. Pick BIOS or UEFI and step through.</p>
+  <div class="demo">
+    <div class="row"><button type="button" id="bootBios">BIOS + MBR (legacy)</button><button type="button" id="bootUefi" class="primary">UEFI + GPT (modern)</button></div>
+    <div class="stepper" id="bootStepper" style="margin-top:12px"></div>
+  </div>
+  <div class="demo">
+    <h3>The 512-byte Master Boot Record</h3>
+    <div class="mbr">
+      <div style="flex:446; background: var(--c-blue-soft)"><b>bootstrap code</b><span class="mono">446 B · GRUB stage 1</span></div>
+      <div style="flex:64; background: var(--c-amber-soft)"><b>table</b><span class="mono">4×16 B</span></div>
+      <div style="flex:14; background: var(--c-pink-soft)"><b>sig</b></div>
+    </div>
+    <p class="hint" style="margin:8px 0 0">Partition table: max 4 primary partitions, max 2 TiB. Signature: <code>0x55 0xAA</code> (2 bytes). 446 bytes is too small for a real boot loader, so stage 1 loads GRUB's <code>core.img</code>.</p>
+  </div>
+  <div class="connect">Connection: PID 1's special rules explain orphans (4.5) and why containers need an init (10.3); initramfs exists because of kernel modules (3.1) and mounts (7.13).</div>
+</section>
+
+<!-- 3.8 -->
+<section class="card" id="s3-8" data-title="3.8 Time">
+  <h2><span class="num">3.8</span>Time: REALTIME vs MONOTONIC</h2>
+  <p class="lead">Start a measurement, then let "NTP" step the wall clock back. The wall clock gives a nonsense duration; the monotonic clock doesn't.</p>
+  <div class="demo">
+    <div class="row">
+      <div class="stat"><span class="k">CLOCK_REALTIME (wall)</span><span class="clock" id="rtNow"></span></div>
+      <div class="stat"><span class="k">CLOCK_MONOTONIC (since start)</span><span class="clock" id="monoNow"></span></div>
+    </div>
+    <div class="row" style="margin-top:12px">
+      <button type="button" id="tmStart" class="primary">Start measuring</button>
+      <button type="button" id="tmStep">NTP steps the clock back 5 s</button>
+      <button type="button" id="tmStop">Stop</button>
+    </div>
+    <div class="row" style="margin-top:12px" id="tmOut"></div>
+  </div>
+  <div class="demo">
+    <h3>The Year 2038 problem: a signed 32-bit <code>time_t</code></h3>
+    <div class="row">
+      <button type="button" id="y38Add">+1 second</button>
+      <button type="button" id="y38Play" class="primary">▶ Play</button>
+      <button type="button" id="y38Reset">reset</button>
+    </div>
+    <div class="stack" style="margin-top:12px">
+      <div class="big" id="y38Val"></div>
+      <div class="mono hint" id="y38Bits" style="word-break: break-all"></div>
+      <div class="big" id="y38Date"></div>
+      <div id="y38Msg" style="font-weight:600; min-height:1.5em"></div>
+    </div>
+  </div>
+  <div class="connect">Connection: these clocks are read through the vDSO (3.3) without entering the kernel; the overflow is two's complement (1.9); the time namespace offsets MONOTONIC per container (10.1).</div>
+</section>
+
+</main>
+<footer class="pager">
+  <a href="part2-cpu.html">← Part 2: CPU</a>
+  <a href="index.html">All visuals</a>
+  <a href="part4-processes.html">Part 4: Processes →</a>
+</footer>
+
+<script>
+(function () {
+  'use strict';
+  const $ = (id) => document.getElementById(id);
+  const h = (tag, props, ...kids) => {
+    const n = document.createElement(tag);
+    if (props) for (const k in props) {
+      if (k === 'class') n.className = props[k];
+      else if (k === 'style') n.style.cssText = props[k];
+      else if (k === 'html') n.innerHTML = props[k];
+      else if (k.startsWith('on')) n.addEventListener(k.slice(2), props[k]);
+      else n.setAttribute(k, props[k]);
+    }
+    for (const kid of kids.flat()) if (kid != null) n.append(kid);
+    return n;
+  };
+  const stat = (k, v, cls) => h('div', { class: 'stat' }, h('span', { class: 'k' }, k), h('span', { class: 'v ' + (cls || '') }, String(v)));
+
+  /* theme */
+  const themeBtn = $('themeBtn');
+  function applyTheme(t) {
+    document.documentElement.setAttribute('data-theme', t);
+    themeBtn.innerHTML = t === 'dark' ? '&#9728;' : '&#9790;';
+    themeBtn.title = t === 'dark' ? 'Switch to light mode' : 'Switch to dark mode';
+  }
+  applyTheme(document.documentElement.getAttribute('data-theme'));
+  themeBtn.addEventListener('click', () => {
+    const t = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+    try { localStorage.setItem('theme', t); } catch (e) {}
+    applyTheme(t);
+  });
+
+  /* chips */
+  const chips = $('chips');
+  const sections = [...document.querySelectorAll('section.card')];
+  sections.forEach((s) => chips.append(h('a', { href: '#' + s.id }, s.dataset.title)));
+  const chipLinks = [...chips.children];
+  const io = new IntersectionObserver((entries) => {
+    entries.forEach((e) => {
+      if (!e.isIntersecting) return;
+      chipLinks.forEach((a) => a.classList.toggle('active', a.getAttribute('href') === '#' + e.target.id));
+      const act = chips.querySelector('.active');
+      if (act) act.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    });
+  }, { rootMargin: '-45% 0px -50% 0px' });
+  sections.forEach((s) => io.observe(s));
+
+  /* generic stepper */
+  function makeStepper(container, getSteps, onStep) {
+    let cur = 0;
+    const list = h('ol'), pane = h('div', { class: 'pane' });
+    const prev = h('button', { type: 'button' }, '← Back'), next = h('button', { type: 'button', class: 'primary' }, 'Next →');
+    container.innerHTML = '';
+    container.append(list, h('div', null, pane, h('div', { class: 'nav' }, prev, next)));
+    function render() {
+      const steps = getSteps();
+      list.innerHTML = '';
+      steps.forEach((s, i) => list.append(h('li', null, h('button', { type: 'button', class: i === cur ? 'cur' : i < cur ? 'done' : '', onclick: () => { cur = i; render(); } }, s.title))));
+      pane.innerHTML = '';
+      pane.append(h('h4', null, steps[cur].title), h('div', { html: steps[cur].text }));
+      prev.disabled = cur === 0; next.disabled = cur === steps.length - 1;
+      if (onStep) onStep(cur, steps[cur]);
+    }
+    prev.addEventListener('click', () => { if (cur > 0) { cur--; render(); } });
+    next.addEventListener('click', () => { if (cur < getSteps().length - 1) { cur++; render(); } });
+    render();
+    return { render, reset: () => { cur = 0; render(); } };
+  }
+
+  /* ---------- 3.1 ---------- */
+  const mPath = [['m-app', 3], ['m-vfs', 0], ['m-fs', 0], ['m-drv', 0], ['m-fs', 0], ['m-vfs', 0], ['m-app', 3]];
+  const uPath = [['u-app', 3], ['u-k', 0], ['u-fs', 3], ['u-k', 0], ['u-drv', 3], ['u-k', 0], ['u-fs', 3], ['u-k', 0], ['u-app', 3]];
+  let kTimer = null;
+  function runK() {
+    clearInterval(kTimer);
+    let i = 0, mc = 0, uc = 0, um = 0;
+    ['mCross', 'mMsg', 'uCross', 'uMsg'].forEach((id) => $(id).textContent = 0);
+    kTimer = setInterval(() => {
+      document.querySelectorAll('#s3-1 .box').forEach((b) => b.classList.remove('lit'));
+      if (i < mPath.length) {
+        $(mPath[i][0]).classList.add('lit');
+        if (i > 0 && mPath[i][1] !== mPath[i - 1][1]) mc++;
+      }
+      if (i < uPath.length) {
+        $(uPath[i][0]).classList.add('lit');
+        if (i > 0 && uPath[i][1] !== uPath[i - 1][1]) uc++;
+        if (uPath[i][0] === 'u-k' && i > 0) um++;
+      }
+      $('mCross').textContent = mc; $('uCross').textContent = uc; $('uMsg').textContent = um;
+      i++;
+      if (i > Math.max(mPath.length, uPath.length)) { clearInterval(kTimer); document.querySelectorAll('#s3-1 .box').forEach((b) => b.classList.remove('lit')); }
+    }, 550);
+  }
+  $('kRun').addEventListener('click', runK);
+
+  makeStepper($('modStepper'), () => [
+    { title: 'Plug in the device', text: 'The USB controller notices a new device and the kernel\'s USB core reads its descriptors (vendor, product, class).' },
+    { title: 'Kernel sends a uevent', text: 'The kernel announces the new device to user space with a <b>uevent</b> over a netlink socket, including a <code>MODALIAS</code> string describing it.' },
+    { title: 'udevd runs modprobe', text: '<code>udevd</code> matches its rules and runs <code>modprobe</code> with the MODALIAS, which looks up the right module (e.g. <code>usb-storage</code>) in <code>modules.alias</code>.' },
+    { title: 'Module loads into ring 0', text: 'The <code>.ko</code> file from <code>/lib/modules/$(uname -r)</code> is linked into the <b>running</b> kernel. It now runs with full privileges in the kernel\'s address space.' },
+    { title: '/dev/sdb appears', text: 'The driver registers a block device; devtmpfs creates <code>/dev/sdb</code> and udev adds stable symlinks like <code>/dev/disk/by-uuid/…</code>. <code>lsmod</code> now lists the module.' },
+  ]);
+
+  /* ---------- 3.2 ---------- */
+  const tries = {
+    read: ['mov eax, [counter]      ; user page, U/S = user', '→ MMU: page present, user-accessible → allowed', '<span class="ok">✓ works. No kernel involvement at all.</span>'],
+    kread: ['mov rax, [0xffffffff81000000]   ; kernel address', '→ MMU: PTE has U/S = supervisor, CPL = 3 → #PF exception', '→ kernel page-fault handler: illegal user access', '<span class="bad">✗ SIGSEGV delivered to the process</span>'],
+    hlt: ['hlt                     ; privileged instruction', '→ CPU: CPL = 3 → #GP (general protection) exception', '<span class="bad">✗ SIGSEGV. Only ring 0 may halt the CPU.</span>'],
+    cr3: ['mov cr3, rax            ; switch page tables?', '→ CPU: privileged instruction at CPL = 3 → #GP', '<span class="bad">✗ SIGSEGV. Otherwise any program could swap in its own address space.</span>'],
+    sys: ['mov rax, 1 ; syscall     ; the legal door', '→ CPU jumps to the entry point in MSR_LSTAR, CPL 3 → 0', '→ kernel checks the arguments, writes to fd 1, returns with sysret (CPL 0 → 3)', '<span class="ok">✓ works: the kernel does the privileged part on your behalf.</span>'],
+  };
+  document.querySelectorAll('[data-try]').forEach((b) => b.addEventListener('click', () => {
+    const out = $('tryOut');
+    out.innerHTML = '';
+    tries[b.dataset.try].forEach((l) => out.append(h('div', { html: l })));
+  }));
+  document.querySelector('[data-try="kread"]').click();
+
+  /* ---------- 3.3 ---------- */
+  const regNames = ['rax', 'rdi', 'rsi', 'rdx', 'rcx', 'r11', 'rip'];
+  function sysSteps() {
+    const bad = $('sysErr').checked, fd = bad ? 9 : 1;
+    const base = { rax: '?', rdi: '?', rsi: '?', rdx: '?', rcx: '?', r11: '?', rip: 'main+0x14' };
+    const loaded = { rax: '1 (write)', rdi: String(fd), rsi: '0x5578…a0 → "hi\\n"', rdx: '3', rcx: '?', r11: '?', rip: 'write+0x10' };
+    const inK = Object.assign({}, loaded, { rcx: 'write+0x12 (saved rip)', r11: 'saved rflags', rip: 'entry_SYSCALL_64' });
+    const ret = Object.assign({}, inK, { rax: bad ? '-9 (-EBADF)' : '3', rip: 'write+0x12' });
+    return [
+      { title: 'Call the libc wrapper', mode: 'ring 3', regs: base, text: 'Your code calls <code>write(' + fd + ', "hi\\n", 3)</code>. This is an ordinary function call into <b>libc</b>: no privilege change yet.' },
+      { title: 'Load the registers', mode: 'ring 3', regs: loaded, text: 'libc puts the syscall number in <code>rax</code> (1 = write) and the arguments in <code>rdi, rsi, rdx</code> (then <code>r10, r8, r9</code>). Note <code>r10</code>, not <code>rcx</code>: the next instruction overwrites <code>rcx</code>.' },
+      { title: 'Execute syscall', mode: 'ring 0', regs: inK, text: 'The <code>syscall</code> instruction saves the user <code>rip</code> in <code>rcx</code> and <code>rflags</code> in <code>r11</code>, switches CPL from 3 to 0, and jumps to the address in <code>MSR_LSTAR</code>: <code>entry_SYSCALL_64</code>.' },
+      { title: 'Switch to the kernel stack', mode: 'ring 0', regs: inK, text: 'The entry code switches to this thread\'s <b>kernel stack</b> and saves all user registers in a <code>struct pt_regs</code>, then calls <code>do_syscall_64()</code>.' },
+      { title: 'Dispatch', mode: 'ring 0', regs: inK, text: '<code>do_syscall_64()</code> dispatches on <code>rax</code> → <code>__x64_sys_write()</code> → <code>ksys_write()</code> → VFS. (Linux 6.9+ uses a <code>switch</code> in <code>x64_sys_call()</code>; before, a <code>sys_call_table[rax]</code> lookup.)' },
+      bad
+        ? { title: 'Look up fd 9: not open', mode: 'ring 0', regs: ret, text: 'The kernel looks up fd 9 in <code>current->files</code>: nothing there. It puts <b>-9 (-EBADF)</b> in <code>rax</code>.' }
+        : { title: 'Do the work', mode: 'ring 0', regs: ret, text: 'fd 1 → <code>struct file</code> for the terminal → its <code>f_op->write_iter</code> copies 3 bytes from user memory. It puts the result, <b>3</b>, in <code>rax</code>.' },
+      { title: 'Check pending work', mode: 'ring 0', regs: ret, text: 'Before returning, the kernel checks for <b>pending signals</b> (deliver them, 8.1) and the <b>need-reschedule</b> flag (maybe run another task, 3.6).' },
+      { title: 'sysret back to user mode', mode: 'ring 3', regs: ret, text: '<code>sysret</code> restores <code>rip</code> from <code>rcx</code> and <code>rflags</code> from <code>r11</code>, and CPL goes back to 3.' },
+      bad
+        ? { title: 'libc sets errno', mode: 'ring 3', regs: ret, text: 'libc sees a value between -4095 and -1: it stores <code>errno = 9</code> (EBADF) and returns <b>-1</b> to your code.' }
+        : { title: 'Return to your code', mode: 'ring 3', regs: ret, text: 'libc returns <b>3</b> (bytes written) to your code. Total: two mode switches, no context switch.' },
+    ];
+  }
+  function drawRegs(regs) {
+    const t = $('regs');
+    t.innerHTML = '';
+    t.append(h('tr', null, h('th', null, 'register'), h('th', null, 'value')));
+    regNames.forEach((r) => t.append(h('tr', { class: regs[r] !== '?' && r !== 'rip' ? 'hl' : '' }, h('td', null, r), h('td', null, regs[r]))));
+  }
+  const sysStepper = makeStepper($('sysStepper'), sysSteps, (i, s) => {
+    drawRegs(s.regs);
+    $('sysMode').textContent = s.mode;
+    $('sysMode').className = 'v ' + (s.mode === 'ring 0' ? 'bad' : 'ok');
+  });
+  $('sysErr').addEventListener('change', () => sysStepper.render());
+
+  [['vDSO clock_gettime (no mode switch)', 20, 'var(--c-green)'], ['simple syscall, e.g. getppid', 200, 'var(--c-amber)'], ['context switch (direct cost)', 2000, 'var(--c-red)']].forEach(([label, ns, col]) => {
+    const w = Math.max(2, Math.log10(ns) / Math.log10(3000) * 100);
+    $('costBars').append(h('div', null, h('div', { class: 'hint' }, `${label}: ~${ns >= 1000 ? ns / 1000 + ' µs' : ns + ' ns'}`),
+      h('div', { style: `height:14px; width:${w}%; background:${col}; border-radius:4px` })));
+  });
+  $('costBars').append(h('div', { class: 'hint' }, 'Bar lengths use a log scale.'));
+
+  /* ---------- 3.4 ---------- */
+  const exLines = ['mov rbx, 1', 'mov rax, [rbx+0x8000]   ← line 2', 'add rax, 5', 'ret'];
+  function showEx(kind) {
+    document.querySelectorAll('[data-ex]').forEach((b) => b.classList.toggle('primary', b.dataset.ex === kind));
+    const code = $('exCode');
+    code.innerHTML = '';
+    const resume = kind === 'fault' ? 1 : kind === 'trap' ? 2 : -1;
+    exLines.forEach((l, i) => {
+      let txt = l;
+      if (kind === 'trap' && i === 1) txt = 'int3                    ← line 2';
+      code.append(h('div', { class: 'ln' }, h('span', { class: 'arrow' }, i === resume ? 'rip →' : ''), h('span', null, `${i + 1}  ${txt}`)));
+    });
+    const msgs = {
+      fault: 'Fault: saved rip points AT the faulting instruction. The kernel loads the page, returns, and line 2 runs again, successfully. This is how demand paging works.',
+      trap: 'Trap: reported AFTER the instruction. Saved rip points at the NEXT instruction (line 3). A debugger stops here; continuing doesn\'t re-run int3.',
+      abort: 'Abort: severe and imprecise (double fault, machine check). The saved rip is unreliable: the kernel panics or kills the process.',
+    };
+    $('exOut').textContent = msgs[kind];
+    $('exOut').className = kind === 'abort' ? 'bad' : '';
+  }
+  document.querySelectorAll('[data-ex]').forEach((b) => b.addEventListener('click', () => showEx(b.dataset.ex)));
+  showEx('fault');
+
+  const IDT = {
+    0: ['#DE divide error', 'fault → SIGFPE'], 1: ['#DB debug', 'single-step / hardware breakpoints'], 2: ['NMI', 'non-maskable interrupt'],
+    3: ['#BP breakpoint (int3)', 'trap → SIGTRAP'], 6: ['#UD invalid opcode', 'fault → SIGILL'], 8: ['#DF double fault', 'abort'],
+    13: ['#GP general protection', 'fault → SIGSEGV (privileged instruction, non-canonical address)'],
+    14: ['#PF page fault', 'fault → handle_mm_fault(): load the page, or SIGSEGV'], 17: ['#AC alignment check', 'fault → SIGBUS'], 18: ['#MC machine check', 'abort: hardware error'],
+    128: ['0x80: legacy int 0x80 syscall', '32-bit system call entry (eax = number)'],
+  };
+  function lookupVec() {
+    let v = Math.max(0, Math.min(255, Math.floor(+$('vec').value || 0)));
+    let name, sub;
+    if (IDT[v]) [name, sub] = IDT[v];
+    else if (v < 32) { name = 'CPU exception (reserved range 0–31)'; sub = 'one of the other architecture-defined exceptions'; }
+    else { name = 'device interrupt / IPI (via the APIC)'; sub = 'e.g. NVMe queue, network card, local timer, inter-processor interrupt'; }
+    $('vecOut').textContent = `IDT[${v}] → ${name}`;
+    $('vecSub').textContent = sub + '. The CPU switches to ring 0, pushes ss, rsp, rflags, cs, rip, and jumps to this entry.';
+  }
+  $('vec').addEventListener('input', lookupVec);
+  document.querySelectorAll('[data-vec]').forEach((b) => b.addEventListener('click', () => { $('vec').value = b.dataset.vec; lookupVec(); }));
+  lookupVec();
+
+  function lanesRender(container, laneDefs, segs) {
+    container.innerHTML = '';
+    laneDefs.forEach(([label, key]) => {
+      const lane = h('div', { class: 'lane' });
+      segs.forEach((s) => lane.append(h('div', { class: 'seg ' + (s.lane === key ? s.cls : 'gap'), style: `width:${s.w}px`, title: s.label || '' }, s.lane === key ? (s.label || '') : '')));
+      container.append(h('div', null, label), lane);
+    });
+  }
+  let irqTimers = [];
+  function packet() {
+    irqTimers.forEach(clearTimeout); irqTimers = [];
+    const flood = $('irqFlood').checked;
+    const defs = [['user task', 'u'], ['hard IRQ', 'i'], [flood ? 'ksoftirqd' : 'softirq', 's']];
+    const full = [
+      { lane: 'u', cls: 'user', w: 70, label: 'running' },
+      { lane: 'i', cls: 'irq', w: 26, label: 'top' },
+      flood ? { lane: 'u', cls: 'user', w: 50, label: 'runs' } : null,
+      { lane: 's', cls: 'soft', w: 120, label: flood ? 'NET_RX as a thread' : 'NET_RX: TCP/IP' },
+      { lane: 'u', cls: 'user', w: 80, label: 'reader woken' },
+    ].filter(Boolean);
+    const segs = [];
+    lanesRender($('irqLanes'), defs, segs);
+    full.forEach((s, i) => irqTimers.push(setTimeout(() => { segs.push(s); lanesRender($('irqLanes'), defs, segs); }, i * 450)));
+    $('irqNote').textContent = flood
+      ? 'Under heavy load the bottom-half work is handed to the ksoftirqd kernel thread, which is scheduled like a task, so user tasks still get CPU time.'
+      : 'Top half: acknowledge the NIC, grab the descriptor, schedule the bottom half (microseconds, interrupts mostly off). Bottom half: run the TCP/IP stack with interrupts on.';
+  }
+  $('irqGo').addEventListener('click', packet);
+  packet();
+
+  /* ---------- 3.5 ---------- */
+  let cs;
+  const csDefs = [['task A (user)', 'A'], ['kernel', 'K'], ['task B (user)', 'B'], ['interrupt', 'I']];
+  function csReset() { cs = { segs: [{ lane: 'A', cls: 'user', w: 50, label: 'A' }], running: 'A', aBlocked: false, mode: 0, ctx: 0, vol: 0, inv: 0 }; csDraw('Running: task A (user mode).'); }
+  function csDraw(note) {
+    lanesRender($('csLanes'), csDefs, cs.segs.slice(-14));
+    $('csMode').textContent = cs.mode; $('csCtx').textContent = cs.ctx; $('csVol').textContent = cs.vol; $('csInv').textContent = cs.inv;
+    $('csNote').textContent = note;
+    document.querySelector('[data-ev="getpid"]').disabled = cs.running !== 'A';
+    document.querySelector('[data-ev="block"]').disabled = cs.running !== 'A';
+    document.querySelector('[data-ev="wake"]').disabled = !cs.aBlocked;
+    document.querySelector('[data-ev="tick"]').disabled = cs.running !== 'B';
+  }
+  const push = (lane, cls, w, label) => cs.segs.push({ lane, cls, w, label });
+  document.querySelectorAll('[data-ev]').forEach((b) => b.addEventListener('click', () => {
+    const ev = b.dataset.ev;
+    if (ev === 'reset') return csReset();
+    if (ev === 'getpid') { push('K', 'kern', 30, 'getpid'); push('A', 'user', 40, 'A'); cs.mode += 2; return csDraw('getpid(): ring 3 → ring 0 → ring 3. Same task the whole time: two mode switches, zero context switches.'); }
+    if (ev === 'block') { push('K', 'kern', 50, 'sched'); push('B', 'userB', 60, 'B'); cs.mode += 2; cs.ctx++; cs.vol++; cs.aBlocked = true; cs.running = 'B'; return csDraw('A asked for data that isn\'t ready, so it sleeps (state S/D). The kernel runs schedule() and switches to B: a VOLUNTARY context switch.'); }
+    if (ev === 'wake') { push('I', 'irq', 34, 'IRQ'); push('B', 'userB', 40, 'B'); cs.mode += 2; cs.aBlocked = false; cs.aReady = true; return csDraw('The disk finished; its interrupt (a mode switch into the kernel and back) marks A runnable. B keeps running for now: waking up a task is not the same as switching to it.'); }
+    if (ev === 'tick') {
+      push('I', 'irq', 40, 'timer'); push('K', 'kern', 50, 'sched'); cs.mode += 2;
+      if (cs.aReady) { push('A', 'user', 50, 'A'); cs.ctx++; cs.inv++; cs.running = 'A'; cs.aReady = false; return csDraw('The timer interrupt found B\'s slice used up and A runnable: B is PREEMPTED, an INVOLUNTARY context switch.'); }
+      push('B', 'userB', 40, 'B'); return csDraw('Timer interrupt, but nobody else is runnable (A is still waiting), so B continues. Mode switches, no context switch.');
+    }
+  }));
+  csReset();
+
+  /* ---------- 3.6 scheduler ---------- */
+  const WEIGHTS = [88761, 71755, 56483, 46273, 36291, 29154, 23254, 18705, 14949, 11916, 9548, 7620, 6100, 4904, 3906, 3121, 2501, 1991, 1586, 1277,
+    1024, 820, 655, 526, 423, 335, 272, 215, 172, 137, 110, 87, 70, 56, 45, 36, 29, 23, 18, 15];
+  const weight = (nice) => WEIGHTS[nice + 20];
+  let tasks, slices, schLog;
+  const names = ['editor', 'compiler', 'backup', 'browser', 'music', 'indexer'];
+  function schReset() {
+    tasks = [{ name: 'editor', nice: 0, vr: 0, run: 0 }, { name: 'compiler', nice: 0, vr: 0, run: 0 }, { name: 'backup', nice: 5, vr: 0, run: 0 }];
+    slices = 0; schLog = 'Three tasks. Change a nice value, then run slices.'; schDraw();
+  }
+  function pickNext() { return tasks.slice().sort((a, b) => a.vr - b.vr || names.indexOf(a.name) - names.indexOf(b.name))[0]; }
+  function schStep(n) {
+    for (let k = 0; k < n; k++) {
+      const t = pickNext();
+      const dv = 4 * 1024 / weight(t.nice);
+      t.run += 4; t.vr += dv; slices++;
+      schLog = `slice ${slices}: ran "${t.name}" for 4 ms → vruntime += 4 × 1024 / ${weight(t.nice)} = ${dv.toFixed(2)} ms`;
+    }
+    schDraw();
+  }
+  function schDraw() {
+    const sorted = tasks.slice().sort((a, b) => a.vr - b.vr || names.indexOf(a.name) - names.indexOf(b.name));
+    const totalRun = tasks.reduce((s, t) => s + t.run, 0) || 1, totalW = tasks.reduce((s, t) => s + weight(t.nice), 0);
+    const box = $('schTasks');
+    box.innerHTML = '';
+    box.append(h('div', { class: 'task hint' }, h('span', null, 'task'), h('span', null, 'nice → weight'), h('span', null, 'CPU time received'), h('span', { class: 'share' }, 'share (fair share)')));
+    sorted.forEach((t, i) => {
+      const sel = h('select', { 'aria-label': 'nice value for ' + t.name });
+      for (let n = -20; n <= 19; n++) sel.append(h('option', n === t.nice ? { value: n, selected: '' } : { value: n }, String(n)));
+      sel.addEventListener('change', () => { t.nice = +sel.value; schDraw(); });
+      box.append(h('div', { class: 'task' + (i === 0 ? ' next' : '') },
+        h('span', { class: 'name' }, (i === 0 ? '▶ ' : '') + t.name),
+        h('span', { class: 'row', style: 'gap:4px' }, sel, h('span', { class: 'mono hint' }, String(weight(t.nice)))),
+        h('div', null, h('div', { class: 'runbar', style: `width:${(t.run / totalRun) * 100}%` }), h('span', { class: 'mono hint' }, `vruntime ${t.vr.toFixed(1)} · ran ${t.run} ms`)),
+        h('span', { class: 'share mono' }, `${((t.run / totalRun) * 100).toFixed(0)}% (${((weight(t.nice) / totalW) * 100).toFixed(0)}%)`)));
+    });
+    $('schLog').textContent = schLog;
+    $('schAdd').disabled = tasks.length >= names.length;
+  }
+  $('schStep').addEventListener('click', () => schStep(1));
+  $('schRun').addEventListener('click', () => schStep(100));
+  $('schReset').addEventListener('click', schReset);
+  $('schAdd').addEventListener('click', () => {
+    const name = names.find((n) => !tasks.some((t) => t.name === n));
+    const minVr = Math.min(...tasks.map((t) => t.vr));
+    tasks.push({ name, nice: 0, vr: minVr, run: 0 });
+    schLog = `"${name}" joins with vruntime = the current minimum (${minVr.toFixed(1)}), so it can't hoard CPU for "time it missed".`;
+    schDraw();
+  });
+  schReset();
+
+  const classes = [
+    ['stop', '(internal)', 'CPU stop / migration tasks'],
+    ['deadline', 'SCHED_DEADLINE', 'declares runtime/period/deadline; EDF + admission control'],
+    ['real-time', 'SCHED_FIFO / SCHED_RR', 'fixed priority 1–99; FIFO runs until it blocks, RR round-robins'],
+    ['fair', 'SCHED_OTHER / SCHED_BATCH', 'the default: EEVDF/CFS, weighted by nice'],
+    ['idle', 'SCHED_IDLE', 'runs only when nothing else wants the CPU'],
+  ];
+  const runnable = [false, false, false, true, true];
+  function drawLadder() {
+    const box = $('ladder');
+    box.innerHTML = '';
+    const winner = runnable.indexOf(true);
+    classes.forEach(([cls, pol, desc], i) => {
+      const cb = h('input', { type: 'checkbox', 'aria-label': cls + ' has runnable tasks' });
+      cb.checked = runnable[i];
+      cb.addEventListener('change', () => { runnable[i] = cb.checked; drawLadder(); });
+      box.append(h('label', { class: 'rung' + (i === winner ? ' runs' : !runnable[i] ? ' blocked' : '') },
+        cb, h('span', null, h('b', null, cls), ' · ', h('code', null, pol), h('div', { class: 'hint' }, desc)),
+        h('b', { class: i === winner ? 'ok' : 'hint' }, i === winner ? 'RUNS' : runnable[i] ? 'waits' : 'empty')));
+    });
+  }
+  drawLadder();
+
+  let ld = { r: 2, d: 0, l1: 0, l5: 0, l15: 0, t: 0 };
+  function ldDraw() {
+    const cores = $('ldCores');
+    cores.innerHTML = '';
+    for (let c = 0; c < 4; c++) cores.append(h('div', { class: 'core' + (c < ld.r ? ' busy' : '') }, c < ld.r ? 'task ' + (c + 1) : 'idle'));
+    const dq = $('ldD');
+    dq.innerHTML = '';
+    if (!ld.d) dq.append(h('span', { class: 'hint' }, 'none'));
+    for (let i = 0; i < ld.d; i++) dq.append(h('span', { class: 'dtask' }, 'D: waiting on NFS'));
+    const st = $('ldStats');
+    st.innerHTML = '';
+    st.append(stat('R + D right now', ld.r + ld.d), stat('CPU busy', Math.min(ld.r, 4) * 25 + '%'),
+      stat('load 1 min', ld.l1.toFixed(2), ld.l1 > 4 ? 'bad' : ''), stat('5 min', ld.l5.toFixed(2)), stat('15 min', ld.l15.toFixed(2)), stat('time', ld.t + ' min'));
+    $('ldNote').textContent = ld.d > 0 && ld.r < 4
+      ? 'High load with idle cores: the D tasks count toward the load but use no CPU. Linux load means "runnable or stuck in uninterruptible sleep".'
+      : ld.r > 4 ? `More R tasks than cores: ${ld.r - 4} wait in the run queue, and load climbs above 4.` : 'Each update is an exponentially damped average, every 5 s; the 15-minute value reacts slowest.';
+  }
+  document.querySelectorAll('[data-ld]').forEach((b) => b.addEventListener('click', () => {
+    const a = b.dataset.ld;
+    if (a === 'r+') ld.r = Math.min(8, ld.r + 1);
+    if (a === 'r-') ld.r = Math.max(0, ld.r - 1);
+    if (a === 'd+') ld.d = Math.min(8, ld.d + 1);
+    if (a === 'd-') ld.d = Math.max(0, ld.d - 1);
+    if (a === 'min') {
+      const n = ld.r + ld.d;
+      for (let i = 0; i < 12; i++) {
+        ld.l1 = ld.l1 * Math.exp(-5 / 60) + n * (1 - Math.exp(-5 / 60));
+        ld.l5 = ld.l5 * Math.exp(-5 / 300) + n * (1 - Math.exp(-5 / 300));
+        ld.l15 = ld.l15 * Math.exp(-5 / 900) + n * (1 - Math.exp(-5 / 900));
+      }
+      ld.t++;
+    }
+    ldDraw();
+  }));
+  ldDraw();
+
+  /* ---------- 3.7 boot ---------- */
+  let bootMode = 'uefi';
+  function bootSteps() {
+    const loader = bootMode === 'bios'
+      ? { title: 'MBR → GRUB', text: 'The BIOS reads the first 512-byte sector, the <b>MBR</b>, and jumps to its 446 bytes of code (GRUB stage 1), which loads GRUB\'s <code>core.img</code> from just after the MBR.' }
+      : { title: 'UEFI → EFI System Partition', text: 'UEFI understands <b>GPT</b> and FAT32. It runs an EFI program from the <b>ESP</b> (<code>/boot/efi</code>), e.g. <code>shimx64.efi</code> → <code>grubx64.efi</code>. Secure Boot verifies each signature.' };
+    return [
+      { title: 'Power on: firmware + POST', text: 'The CPU starts executing firmware from flash. <b>POST</b> tests the CPU, RAM (writes and reads back patterns), firmware checksum, video, storage and I/O devices, then builds the memory map and ACPI tables.' },
+      loader,
+      { title: 'GRUB loads kernel + initramfs', text: 'GRUB shows its menu (<code>grub.cfg</code>), loads <code>vmlinuz</code> and the <code>initrd.img</code> into RAM, passes the kernel command line (<code>root=UUID=… ro quiet</code>) and jumps to the kernel.' },
+      { title: 'Kernel initialization', text: '<code>start_kernel()</code>: page tables, a <code>struct page</code> per frame, memory zones, the IDT, scheduler, timers, built-in drivers. Creates PID 0 (idle), PID 1 (<code>kernel_init</code>), PID 2 (<code>kthreadd</code>).' },
+      { title: 'initramfs: temporary root', text: 'The kernel unpacks a cpio archive into a RAM filesystem and runs its <code>/init</code>: load storage drivers, wait for the root device, unlock it if encrypted, mount it.' },
+      { title: 'switch_root', text: 'The real root filesystem becomes <code>/</code>, the initramfs is freed, and <code>/sbin/init</code> is <code>exec</code>ed.' },
+      { title: 'systemd = PID 1', text: 'The first user-space process. Mounts the rest (<code>/etc/fstab</code>, <code>/proc</code>, <code>/sys</code>, <code>/dev</code>), starts udev, journald, networking, sshd, and a getty per terminal. Adopts orphans forever. If it exits, the kernel panics.' },
+      { title: 'getty → login → shell', text: '<code>agetty</code> opens <code>/dev/tty1</code> as fds 0/1/2 and prints <code>login:</code>, then <code>exec</code>s <code>login</code>. login checks your password, forks, and the child sets your UID/GID and <code>exec</code>s your shell.' },
+    ];
+  }
+  const bootStepper = makeStepper($('bootStepper'), bootSteps);
+  $('bootBios').addEventListener('click', () => { bootMode = 'bios'; $('bootBios').classList.add('primary'); $('bootUefi').classList.remove('primary'); bootStepper.render(); });
+  $('bootUefi').addEventListener('click', () => { bootMode = 'uefi'; $('bootUefi').classList.add('primary'); $('bootBios').classList.remove('primary'); bootStepper.render(); });
+
+  /* ---------- 3.8 clocks ---------- */
+  const t0 = performance.now();
+  let rtOffset = 0, meas = null;
+  const rtNow = () => Date.now() + rtOffset;
+  const monoNow = () => performance.now() - t0;
+  setInterval(() => {
+    $('rtNow').textContent = new Date(rtNow()).toISOString().slice(11, 22);
+    $('monoNow').textContent = (monoNow() / 1000).toFixed(1) + ' s';
+  }, 100);
+  function tmShow(done) {
+    const out = $('tmOut');
+    out.innerHTML = '';
+    if (!meas) { out.append(h('span', { class: 'hint' }, 'Press Start, wait a couple of seconds, step the clock, then Stop.')); return; }
+    const endRt = done ? meas.endRt : rtNow(), endMono = done ? meas.endMono : monoNow();
+    const dRt = (endRt - meas.rt) / 1000, dMono = (endMono - meas.mono) / 1000;
+    out.append(stat('duration by REALTIME', dRt.toFixed(2) + ' s', dRt < 0 || Math.abs(dRt - dMono) > 0.5 ? 'bad' : 'ok'),
+      stat('duration by MONOTONIC', dMono.toFixed(2) + ' s', 'ok'));
+    if (dRt < 0) out.append(h('span', { class: 'bad', style: 'font-weight:600' }, 'Negative duration! Never measure elapsed time with the wall clock.'));
+  }
+  let tmTimer = null;
+  $('tmStart').addEventListener('click', () => { meas = { rt: rtNow(), mono: monoNow() }; clearInterval(tmTimer); tmTimer = setInterval(() => tmShow(false), 100); });
+  $('tmStep').addEventListener('click', () => { rtOffset -= 5000; });
+  $('tmStop').addEventListener('click', () => { if (!meas) return; clearInterval(tmTimer); meas.endRt = rtNow(); meas.endMono = monoNow(); tmShow(true); });
+  tmShow(false);
+
+  let y38 = 2147483643, y38Timer = null;
+  function y38Draw(prev) {
+    const s = y38 | 0;
+    $('y38Val').textContent = `time_t = ${s}`;
+    $('y38Bits').textContent = (y38 >>> 0).toString(2).padStart(32, '0') + `  (0x${(y38 >>> 0).toString(16).toUpperCase().padStart(8, '0')})`;
+    $('y38Date').textContent = new Date(s * 1000).toISOString().replace('T', ' ').replace('.000Z', ' UTC');
+    if (prev === 2147483647 && s < 0) { $('y38Msg').textContent = 'Overflow! 0x7FFFFFFF + 1 = 0x80000000 = −2³¹ → December 1901.'; $('y38Msg').className = 'bad'; }
+    else if (s === 2147483647) { $('y38Msg').textContent = 'The largest signed 32-bit value: 2038-01-19 03:14:07 UTC.'; $('y38Msg').className = 'warn'; }
+  }
+  function y38Tick() { const p = y38 | 0; y38 = (y38 + 1) | 0; y38Draw(p); if ((y38 | 0) < 0 && p > 0) { clearInterval(y38Timer); y38Timer = null; $('y38Play').textContent = '▶ Play'; } }
+  $('y38Add').addEventListener('click', y38Tick);
+  $('y38Play').addEventListener('click', () => {
+    if (y38Timer) { clearInterval(y38Timer); y38Timer = null; $('y38Play').textContent = '▶ Play'; return; }
+    y38Timer = setInterval(y38Tick, 700); $('y38Play').textContent = '❚❚ Pause';
+  });
+  $('y38Reset').addEventListener('click', () => { clearInterval(y38Timer); y38Timer = null; $('y38Play').textContent = '▶ Play'; y38 = 2147483643; $('y38Msg').textContent = ''; y38Draw(); });
+  y38Draw();
+})();
+</script>
+</body>
+</html>

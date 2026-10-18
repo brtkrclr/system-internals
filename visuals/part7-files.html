@@ -1,0 +1,1594 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Files and I/O, Visualized</title>
+<meta name="description" content="Interactive visuals for Part 7 of System Internals: file descriptors, open file descriptions, inodes, links, VFS, redirection, buffering, epoll, io_uring, permissions, devices, mounts and the storage stack.">
+<script>
+  (function () {
+    var saved = null;
+    try { saved = localStorage.getItem('theme'); } catch (e) {}
+    var dark = saved ? saved === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches;
+    document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+  })();
+</script>
+<style>
+
+  :root {
+    --bg: #ffffff; --surface: #f6f8fa; --surface-2: #eaeef2; --text: #1f2328; --muted: #59636e;
+    --border: #d0d7de; --accent: #0969da; --accent-soft: #ddf4ff;
+    --c-blue: #0969da; --c-pink: #bf3989; --c-green: #1a7f37; --c-amber: #9a6700; --c-purple: #8250df; --c-red: #cf222e;
+    --c-blue-soft: #ddf4ff; --c-pink-soft: #ffeff7; --c-green-soft: #dafbe1; --c-amber-soft: #fff8c5; --c-purple-soft: #fbefff; --c-red-soft: #ffebe9;
+    --hatch: repeating-linear-gradient(45deg, transparent 0 4px, rgba(130,80,223,.22) 4px 7px);
+    --radius: 8px;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  html[data-theme="dark"] {
+    --bg: #0d1117; --surface: #151b23; --surface-2: #212830; --text: #e6edf3; --muted: #9198a1;
+    --border: #3d444d; --accent: #4493f8; --accent-soft: rgba(56,139,253,.15);
+    --c-blue: #4493f8; --c-pink: #f778ba; --c-green: #3fb950; --c-amber: #d29922; --c-purple: #ab7df8; --c-red: #f85149;
+    --c-blue-soft: rgba(56,139,253,.18); --c-pink-soft: rgba(247,120,186,.16); --c-green-soft: rgba(63,185,80,.16);
+    --c-amber-soft: rgba(210,153,34,.18); --c-purple-soft: rgba(171,125,248,.18); --c-red-soft: rgba(248,81,73,.16);
+    --hatch: repeating-linear-gradient(45deg, transparent 0 4px, rgba(171,125,248,.30) 4px 7px);
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif; }
+  a { color: var(--accent); }
+  code, .mono { font-family: var(--mono); font-size: .92em; }
+  code { background: var(--surface-2); padding: .1em .35em; border-radius: 4px; }
+
+  header.top { max-width: 1040px; margin: 0 auto; padding: 32px 16px 8px; }
+  header.top h1 { margin: 0 0 6px; font-size: clamp(28px, 5vw, 40px); line-height: 1.15; }
+  header.top p { margin: 0 0 8px; color: var(--muted); max-width: 70ch; }
+  .backlink { font-size: 14px; }
+
+  nav.chips { position: sticky; top: 0; z-index: 10; background: var(--bg); border-bottom: 1px solid var(--border); }
+  nav.chips .inner { max-width: 1040px; margin: 0 auto; padding: 8px 16px; display: flex; gap: 6px; overflow-x: auto; scrollbar-width: thin; }
+  nav.chips a { flex: none; font-size: 13px; padding: 4px 10px; border: 1px solid var(--border); border-radius: 999px;
+                color: var(--text); text-decoration: none; background: var(--surface); white-space: nowrap; }
+  nav.chips a:hover, nav.chips a.active { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+
+  main { max-width: 1040px; margin: 0 auto; padding: 8px 16px 64px; }
+  section.card { border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin: 24px 0; background: var(--bg); scroll-margin-top: 56px; }
+  section.card > h2 { margin: 0 0 4px; font-size: 22px; }
+  section.card > h2 .num { color: var(--muted); font-weight: 500; margin-right: 6px; }
+  .lead { color: var(--muted); margin: 0 0 16px; max-width: 75ch; }
+  .demo { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; margin: 12px 0; overflow-x: auto; }
+  .demo h3 { margin: 0 0 10px; font-size: 15px; }
+  .row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+  .stack { display: flex; flex-direction: column; gap: 10px; }
+  .connect { font-size: 14px; color: var(--muted); border-left: 3px solid var(--accent); padding: 4px 0 4px 10px; margin-top: 14px; }
+  .hint { font-size: 13px; color: var(--muted); }
+  .big { font-family: var(--mono); font-size: 22px; font-weight: 600; }
+  .stat { display: inline-flex; flex-direction: column; padding: 6px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg); min-width: 90px; }
+  .stat .k { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  .stat .v { font-family: var(--mono); font-size: 18px; font-weight: 600; }
+  .ok { color: var(--c-green); } .bad { color: var(--c-red); } .warn { color: var(--c-amber); }
+
+  button, select, input[type="text"], input[type="number"] {
+    font: inherit; font-size: 14px; color: var(--text); background: var(--bg);
+    border: 1px solid var(--border); border-radius: 6px; padding: 5px 10px;
+  }
+  button { cursor: pointer; }
+  button:hover { background: var(--surface-2); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover { filter: brightness(1.08); background: var(--accent); }
+  button:focus-visible, select:focus-visible, input:focus-visible, .bit:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  input[type="range"] { accent-color: var(--accent); width: min(360px, 100%); }
+  label.inline { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; }
+
+  /* bits */
+  .bits { display: inline-flex; gap: 4px; flex-wrap: nowrap; }
+  .bitcol { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+  .bit { width: 34px; height: 40px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg);
+         font: 600 18px var(--mono); color: var(--muted); cursor: pointer; padding: 0; transition: background .12s, color .12s; }
+  .bit.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .bit.sm { width: 22px; height: 30px; font-size: 14px; }
+  .bitcol .w { font: 11px var(--mono); color: var(--muted); }
+  .nibble { display: inline-flex; flex-direction: column; align-items: center; gap: 6px; padding: 6px; border: 1px dashed var(--border); border-radius: 8px; }
+  .nibble .hx { font: 700 22px var(--mono); color: var(--c-pink); }
+  .gap { width: 10px; }
+
+  /* byte cells */
+  .cells { display: grid; gap: 2px; }
+  .cell { height: 30px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg);
+          font: 11px var(--mono); color: var(--muted); display: flex; align-items: center; justify-content: center; position: relative; }
+  .cell.hl { background: var(--c-blue-soft); border-color: var(--c-blue); color: var(--text); font-weight: 600; }
+  .cell.hl2 { background: var(--c-pink-soft); border-color: var(--c-pink); color: var(--text); }
+  .cell.pad { background: var(--hatch), var(--bg); border-style: dashed; }
+  .cell.line { background: var(--c-amber-soft); }
+  .cell.boxstart { margin-left: 6px; }
+  .cell.lineb { box-shadow: -4px 0 0 0 var(--c-red); margin-left: 8px; }
+
+  table.mem { border-collapse: collapse; font-family: var(--mono); font-size: 14px; }
+  table.mem th, table.mem td { border: 1px solid var(--border); padding: 4px 10px; text-align: center; }
+  table.mem th { background: var(--surface-2); font-weight: 600; font-family: inherit; font-size: 13px; }
+
+  .tiles { display: grid; gap: 1px; }
+  .tile { width: 9px; height: 9px; background: var(--surface-2); border-radius: 1px; }
+  .tile.mark { background: var(--c-pink); }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 13px; color: var(--muted); }
+  .legend span::before { content: ""; display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 5px; vertical-align: -2px; background: var(--sw); border: 1px solid var(--border); }
+
+  /* address space */
+  .addrspace { display: grid; grid-template-columns: 120px 1fr; gap: 0; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; font-size: 13px; max-width: 560px; }
+  .addrspace > div { padding: 8px 10px; border-bottom: 1px solid var(--border); }
+  .addrspace .lbl { font-family: var(--mono); font-size: 11px; color: var(--muted); background: var(--surface-2); }
+  .addrspace .zone.kern { background: var(--c-purple-soft); }
+  .addrspace .zone.hole { background: var(--hatch), var(--bg); color: var(--muted); }
+  .addrspace .zone.user { background: var(--c-green-soft); }
+  .addrspace .zone.here { outline: 3px solid var(--accent); outline-offset: -3px; font-weight: 600; }
+  .bar { height: 26px; border-radius: 6px; display: flex; overflow: hidden; border: 1px solid var(--border); font-size: 12px; }
+  .bar > div { display: flex; align-items: center; justify-content: center; color: var(--text); white-space: nowrap; overflow: hidden; }
+  .logbar { display: grid; grid-template-columns: 110px 1fr 90px; gap: 6px 10px; align-items: center; font-size: 13px; }
+  .logbar .fill { height: 14px; border-radius: 4px; background: var(--accent); }
+
+  /* struct */
+  .fields { display: flex; flex-direction: column; gap: 6px; }
+  .field { display: flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 14px; }
+  .field .sw { width: 14px; height: 14px; border-radius: 3px; }
+  .field button { padding: 2px 8px; font-size: 13px; }
+  .structgrid { display: grid; grid-template-columns: 56px repeat(8, minmax(38px, 1fr)); gap: 3px; align-items: center; max-width: 520px; }
+  .structgrid .off { font: 11px var(--mono); color: var(--muted); text-align: right; padding-right: 6px; }
+  .structgrid .cell { height: 34px; font-size: 12px; color: var(--text); }
+
+  /* matrix sim */
+  .matrix { display: grid; grid-template-columns: repeat(8, 30px); gap: 3px; }
+  .matrix .cell { height: 30px; transition: background .1s; }
+  .matrix .cell.cached { background: var(--c-blue-soft); }
+  .matrix .cell.hit { background: var(--c-green); color: #fff; border-color: var(--c-green); }
+  .matrix .cell.miss { background: var(--c-red); color: #fff; border-color: var(--c-red); }
+  .matrix .cell.gb { margin-left: 5px; }
+
+  .cores { display: grid; grid-template-columns: repeat(2, minmax(160px, 1fr)); gap: 12px; max-width: 560px; }
+  .core { border: 1px solid var(--border); border-radius: 8px; padding: 10px; background: var(--bg); transition: box-shadow .15s; }
+  .core.flash { box-shadow: 0 0 0 3px var(--c-red); }
+  .core h4 { margin: 0 0 6px; font-size: 14px; }
+  .state { font: 600 13px var(--mono); padding: 2px 6px; border-radius: 4px; }
+  .state.M { background: var(--c-green-soft); color: var(--c-green); }
+  .state.I { background: var(--c-red-soft); color: var(--c-red); }
+  .state.S { background: var(--c-blue-soft); color: var(--c-blue); }
+  .state.none { background: var(--surface-2); color: var(--muted); }
+
+  /* float */
+  .fbits { display: flex; flex-wrap: wrap; gap: 2px; }
+  .fbits .bit { width: 20px; height: 30px; font-size: 13px; }
+  .fbits .bit.s { --tone: var(--c-red); } .fbits .bit.e { --tone: var(--c-blue); } .fbits .bit.f { --tone: var(--c-green); }
+  .fbits .bit { border-color: var(--tone); color: var(--tone); }
+  .fbits .bit.on { background: var(--tone); color: #fff; }
+  .fbits .sep { width: 8px; }
+  .exact { font-family: var(--mono); font-size: 13px; word-break: break-all; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; }
+
+  /* utf8 */
+  .cps { display: flex; flex-wrap: wrap; gap: 10px; }
+  .cp { border: 1px solid var(--border); border-radius: 8px; background: var(--bg); padding: 10px; min-width: 150px; }
+  .cp .ch { font-size: 30px; line-height: 1.1; }
+  .cp .u { font: 600 13px var(--mono); color: var(--c-purple); }
+  .cp .bytes { font: 13px var(--mono); margin-top: 6px; }
+  .cp .pre { color: var(--muted); }
+  .cp .pay { color: var(--c-green); font-weight: 600; }
+  .cp .hexb { color: var(--c-pink); }
+
+  svg text { font-family: var(--mono); }
+  .theme-btn { position: fixed; top: 10px; right: 12px; z-index: 20; width: 34px; height: 34px; padding: 0; font-size: 16px; }
+  @media (max-width: 600px) {
+    section.card { padding: 14px; }
+    .bit { width: 30px; height: 36px; font-size: 16px; }
+    .structgrid { grid-template-columns: 44px repeat(8, minmax(28px, 1fr)); }
+  }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+
+
+  /* ---- extras for parts 7/8 ---- */
+  .log { font: 13px/1.5 var(--mono); background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+         padding: 8px 10px; max-height: 190px; overflow: auto; white-space: pre-wrap; margin-top: 10px; }
+  .log:empty::before { content: "(event log)"; color: var(--muted); }
+  .steps { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 4px; }
+  .steps li { padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); font-size: 14px; }
+  .steps li.done { opacity: .55; }
+  .steps li.now { border-color: var(--accent); background: var(--accent-soft); font-weight: 600; opacity: 1; }
+  .box { border: 1px solid var(--border); border-radius: 8px; background: var(--bg); padding: 8px 10px; overflow-x: auto; }
+  .box h4 { margin: 0 0 6px; font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  .chip { display: inline-block; font: 12px var(--mono); padding: 1px 7px; border-radius: 4px; background: var(--surface-2); border: 1px solid var(--border); margin: 1px 2px; white-space: nowrap; }
+  .chip.blue { background: var(--c-blue-soft); border-color: var(--c-blue); }
+  .chip.pink { background: var(--c-pink-soft); border-color: var(--c-pink); }
+  .chip.green { background: var(--c-green-soft); border-color: var(--c-green); }
+  .chip.amber { background: var(--c-amber-soft); border-color: var(--c-amber); }
+  .chip.purple { background: var(--c-purple-soft); border-color: var(--c-purple); }
+  .chip.red { background: var(--c-red-soft); border-color: var(--c-red); }
+  .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+  .tree { font: 13px/1.7 var(--mono); }
+  .tree .node { cursor: pointer; padding: 0 4px; border-radius: 4px; }
+  .tree .node:hover, .tree .node.sel { background: var(--accent-soft); color: var(--accent); }
+  table.mem tr.sel td { background: var(--accent-soft); }
+  table.mem td.l { text-align: left; }
+  table.mem tr.click { cursor: pointer; }
+  table.mem tr.click:hover td { background: var(--surface-2); }
+  .layer { border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; background: var(--bg); font-size: 14px; transition: background .15s, border-color .15s; }
+  .layer.on { background: var(--accent-soft); border-color: var(--accent); font-weight: 600; }
+  .arrow { text-align: center; color: var(--muted); font-size: 13px; line-height: 1; }
+  .lane { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 6px; }
+  .pill { display: inline-block; padding: 2px 10px; border-radius: 999px; font: 600 13px var(--mono); border: 1px solid var(--border); }
+  .pill.user { background: var(--c-green-soft); color: var(--c-green); border-color: var(--c-green); }
+  .pill.kernel { background: var(--c-purple-soft); color: var(--c-purple); border-color: var(--c-purple); }
+  .pill.dead { background: var(--c-red-soft); color: var(--c-red); border-color: var(--c-red); }
+  .pill.stop { background: var(--c-amber-soft); color: var(--c-amber); border-color: var(--c-amber); }
+  .pill.sleep { background: var(--c-blue-soft); color: var(--c-blue); border-color: var(--c-blue); }
+  .bitgrid { display: grid; grid-template-columns: repeat(32, minmax(14px, 1fr)); gap: 2px; min-width: 540px; }
+  .bitgrid .b { height: 26px; border: 1px solid var(--border); border-radius: 3px; background: var(--bg); font: 9px var(--mono); color: var(--muted);
+                display: flex; align-items: center; justify-content: center; cursor: pointer; padding: 0; }
+  .bitgrid .b.blk { background: var(--c-amber-soft); border-color: var(--c-amber); color: var(--text); }
+  .bitgrid .b.pend { box-shadow: inset 0 -4px 0 var(--c-red); color: var(--text); font-weight: 700; }
+  .bitgrid .b.set { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .stackv { display: flex; flex-direction: column-reverse; gap: 3px; min-width: 200px; }
+  .frame { border: 1px solid var(--border); border-radius: 5px; padding: 4px 8px; font: 12px var(--mono); background: var(--bg); }
+  .frame.sig { background: var(--c-pink-soft); border-color: var(--c-pink); }
+  .frame.h { background: var(--c-blue-soft); border-color: var(--c-blue); }
+  .ring { display: grid; grid-template-columns: repeat(8, minmax(44px, 1fr)); gap: 4px; max-width: 520px; }
+  .ring .slot { height: 44px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); font: 11px var(--mono);
+                display: flex; align-items: center; justify-content: center; text-align: center; position: relative; padding: 2px; }
+  .ring .slot.full { background: var(--c-blue-soft); border-color: var(--c-blue); }
+  .ring .slot.done { background: var(--c-green-soft); border-color: var(--c-green); }
+  .ring .slot .ptr { position: absolute; top: -15px; font-size: 10px; color: var(--c-pink); font-weight: 700; }
+  .fdgrid { display: grid; grid-template-columns: repeat(16, minmax(26px, 1fr)); gap: 3px; max-width: 560px; }
+  .fdgrid .cell { height: 28px; font-size: 10px; }
+  .fdgrid .cell.ready { background: var(--c-green-soft); border-color: var(--c-green); color: var(--text); font-weight: 700; }
+  .fdgrid .cell.scan { background: var(--c-amber-soft); border-color: var(--c-amber); }
+  .footnav { max-width: 1040px; margin: 0 auto; padding: 0 16px 48px; display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; font-size: 14px; }
+  .perm { display: inline-grid; grid-template-columns: auto repeat(3, 34px); gap: 4px 6px; align-items: center; font-size: 13px; }
+  .perm label { display: flex; justify-content: center; }
+  .perm .hdr { font: 600 11px var(--mono); color: var(--muted); text-align: center; }
+  .seekbar { position: relative; height: 34px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); max-width: 560px; }
+  .seekbar .req { position: absolute; top: 6px; width: 20px; height: 20px; margin-left: -10px; border-radius: 50%; background: var(--c-blue-soft); border: 1px solid var(--c-blue); font: 10px/18px var(--mono); text-align: center; }
+  .seekbar .head { position: absolute; top: -4px; bottom: -4px; width: 3px; margin-left: -1px; background: var(--c-red); transition: left .25s; }
+
+</style>
+</head>
+<body>
+<button class="theme-btn" id="themeBtn" type="button" aria-label="Toggle dark mode"></button>
+
+<header class="top">
+  <a class="backlink" href="../#7-files-and-io">← Back to the notes: Part 7</a>
+  <h1>Files and I/O, Visualized</h1>
+  <p>Open files, fork, redirect, delete, mount and crash things, and watch the kernel's fd tables, inodes and caches react.</p>
+</header>
+
+<nav class="chips" aria-label="Sections"><div class="inner" id="chips"></div></nav>
+
+<main>
+
+<!-- 7.1 -->
+<section class="card" id="s7-1" data-title="7.1 File descriptors">
+  <h2><span class="num">7.1</span>File Descriptors</h2>
+  <p class="lead">An fd is just an index into the process's descriptor table. <code>open()</code> always returns the <b>lowest free</b> number.</p>
+  <div class="demo">
+    <div class="row">
+      <button type="button" id="f1Open" class="primary">open("data.txt")</button>
+      <button type="button" id="f1Open2">open("log.txt")</button>
+      <button type="button" id="f1Close3">close(3)</button>
+      <button type="button" id="f1Close0">close(0)</button>
+      <button type="button" id="f1Reset">Reset</button>
+    </div>
+    <div class="row" style="align-items:flex-start; gap:20px; margin-top:12px">
+      <table class="mem" id="f1Table"></table>
+      <div class="log" id="f1Log" style="flex:1; min-width:240px; margin-top:0"></div>
+    </div>
+    <p class="hint" style="margin:8px 0 0">Try: close(0), then open again. The new file becomes fd 0, i.e. the program's new stdin. That's how shells redirect <code>&lt; file</code>.</p>
+  </div>
+  <div class="connect">Connection: the table hangs off <code>task_struct->files</code> (4.2); its size limit is <code>ulimit -n</code> (RLIMIT_NOFILE), and hitting it gives EMFILE.</div>
+</section>
+
+<!-- 7.2 -->
+<section class="card" id="s7-2" data-title="7.2 File table">
+  <h2><span class="num">7.2</span>Open File Descriptions: the Three Layers</h2>
+  <p class="lead">fd tables (per process) → open file descriptions (<code>struct file</code>, holds the offset) → inodes (the file itself). Run the operations and watch which offsets move.</p>
+  <div class="demo">
+    <div class="row">
+      <label class="inline">process <select id="f2Proc"></select></label>
+      <label class="inline">fd <select id="f2Fd"></select></label>
+      <button type="button" id="f2Open" class="primary">open("log.txt")</button>
+      <button type="button" id="f2Read">read(fd, 100)</button>
+      <button type="button" id="f2Dup">dup(fd)</button>
+      <button type="button" id="f2Close">close(fd)</button>
+      <button type="button" id="f2Fork">fork()</button>
+      <button type="button" id="f2Reset">Reset</button>
+    </div>
+    <div class="cols" style="margin-top:12px">
+      <div class="box"><h4>per-process fd tables</h4><div id="f2Procs" class="stack" style="gap:8px"></div></div>
+      <div class="box"><h4>open file descriptions (struct file)</h4><div id="f2Files" class="stack" style="gap:6px"></div></div>
+      <div class="box"><h4>inodes</h4><div id="f2Inodes" class="stack" style="gap:6px"></div></div>
+    </div>
+    <div class="log" id="f2Log"></div>
+    <p class="hint" style="margin:8px 0 0">Try: open log.txt twice (two offsets, one inode), then fork() and read in both processes: parent and child share one offset.</p>
+  </div>
+  <div class="connect">Connection: fork() copies the fd table but not the struct files (4.9); threads share the whole table (5.1); shell redirection is open + dup2 between fork and exec (7.5).</div>
+</section>
+
+<!-- 7.3 -->
+<section class="card" id="s7-3" data-title="7.3 Inodes & links">
+  <h2><span class="num">7.3</span>Inodes, Directory Entries and Links</h2>
+  <p class="lead">A directory is a table of name → inode number. The inode holds everything else, except the name.</p>
+  <div class="demo">
+    <h3>On-disk layout of an ext4 partition (click a region)</h3>
+    <div class="bar" id="f3Disk" style="max-width:720px; height:40px; cursor:pointer"></div>
+    <p id="f3DiskOut" style="margin:10px 0 0"></p>
+  </div>
+  <div class="demo">
+    <h3>A directory and its inodes (click an entry)</h3>
+    <div class="row" style="align-items:flex-start; gap:20px">
+      <div><div class="hint">/home/berat (a directory = a list of entries)</div><table class="mem" id="f3Dir"></table></div>
+      <div style="flex:1; min-width:260px"><div class="hint">stat: the inode</div><table class="mem" id="f3Stat"></table></div>
+    </div>
+  </div>
+  <div class="demo">
+    <h3>Hard links vs symlinks</h3>
+    <p class="hint" style="margin:0 0 8px">Two filesystems: <code>/home/berat</code> on ext4 (nvme0n1p2) and <code>/mnt/usb</code> on another filesystem (sdc1), which already has <code>photo.jpg</code>.</p>
+    <div class="row" style="gap:6px">
+      <button type="button" data-ln="create">echo hi &gt; myfile.txt</button>
+      <button type="button" data-ln="hard">ln myfile.txt hard</button>
+      <button type="button" data-ln="soft">ln -s myfile.txt soft</button>
+      <button type="button" data-ln="rm">rm myfile.txt</button>
+      <button type="button" data-ln="mv">mv hard renamed</button>
+      <button type="button" data-ln="catsoft">cat soft</button>
+      <button type="button" data-ln="cathard">cat hard / renamed</button>
+      <button type="button" data-ln="xdev">ln /mnt/usb/photo.jpg p</button>
+      <button type="button" data-ln="xsoft">ln -s /mnt/usb/photo.jpg p-link</button>
+      <button type="button" data-ln="reset">Reset</button>
+    </div>
+    <div class="cols" style="margin-top:12px">
+      <div class="box"><h4>directory entries</h4><table class="mem" id="lnDir" style="width:100%"></table></div>
+      <div class="box"><h4>inodes</h4><table class="mem" id="lnIno" style="width:100%"></table></div>
+    </div>
+    <div class="log" id="lnLog"></div>
+  </div>
+  <div class="demo">
+    <h3>Path resolution: <code>open("/home/berat/docs/notes.txt")</code></h3>
+    <p class="hint" style="margin:0 0 8px"><code>docs</code> is a symlink to <code>/data/docs</code>, and <code>/data</code> is a mount point for a second disk.</p>
+    <div class="row"><button type="button" id="pwNext" class="primary">Next step →</button><button type="button" id="pwReset">Reset</button><button type="button" id="pwLoop">Try a symlink loop (a → b → a)</button></div>
+    <div class="row mono" id="pwPath" style="margin:12px 0; gap:4px; font-size:15px"></div>
+    <ol class="steps" id="pwSteps"></ol>
+  </div>
+  <div class="demo">
+    <h3>rm while a process still has the file open (why df and du disagree)</h3>
+    <div class="row" style="gap:6px">
+      <button type="button" data-ul="open">java opens app.log</button>
+      <button type="button" data-ul="grow">app writes +2 GB</button>
+      <button type="button" data-ul="rm">rm app.log</button>
+      <button type="button" data-ul="trunc">: &gt; /proc/2211/fd/7</button>
+      <button type="button" data-ul="close">restart java</button>
+      <button type="button" data-ul="reset">Reset</button>
+    </div>
+    <div class="row" style="margin-top:12px" id="ulStats"></div>
+    <div class="stack" style="margin-top:10px; max-width:560px">
+      <div><span class="hint">df (asks the filesystem)</span><div class="bar" id="ulDf"></div></div>
+      <div><span class="hint">du (walks names)</span><div class="bar" id="ulDu"></div></div>
+    </div>
+    <div class="log" id="ulLog"></div>
+  </div>
+  <div class="connect">Connection: the inode is what the page cache is keyed on (6.7); inode numbers are per filesystem, which is why hard links and rename can't cross mounts (7.13).</div>
+</section>
+
+<!-- 7.4 -->
+<section class="card" id="s7-4" data-title="7.4 VFS">
+  <h2><span class="num">7.4</span>VFS and "Everything Is a File"</h2>
+  <p class="lead">The same <code>read(fd, buf, n)</code> call ends up in completely different code depending on what the fd refers to. Pick a target.</p>
+  <div class="demo">
+    <div class="row" id="vfsBtns" style="gap:6px"></div>
+    <div class="stack" style="gap:4px; margin-top:12px; max-width:720px">
+      <div class="layer on">user space: <code>read(fd, buf, 4096)</code></div>
+      <div class="arrow">↓ syscall instruction (3.3)</div>
+      <div class="layer on">VFS: <code>ksys_read()</code> → look up <code>struct file</code> → <code>file->f_op->read_iter()</code></div>
+      <div class="arrow">↓ function pointer chosen by the file type</div>
+      <div class="lane" id="vfsImpl"></div>
+      <div class="arrow">↓</div>
+      <div class="layer on" id="vfsBottom"></div>
+    </div>
+    <p id="vfsOut" style="margin:10px 0 0"></p>
+  </div>
+  <div class="connect">Connection: because all of these are fds, the same epoll loop (7.8) can wait on sockets, pipes, timers, signals (signalfd, 8.3) and processes (pidfd, 4.5).</div>
+</section>
+
+<!-- 7.5 -->
+<section class="card" id="s7-5" data-title="7.5 Redirection">
+  <h2><span class="num">7.5</span>Standard Streams and Redirection</h2>
+  <p class="lead">The shell redirects between fork() and exec() with <code>open</code> + <code>dup2</code>. Order matters. Step through each command.</p>
+  <div class="demo">
+    <div class="row">
+      <label class="inline">command <select id="rdCmd">
+        <option value="a">cmd &gt; out.txt 2&gt;&amp;1</option>
+        <option value="b">cmd 2&gt;&amp;1 &gt; out.txt</option>
+        <option value="c">cmd 2&gt; err.txt &gt; out.txt</option>
+        <option value="d">cmd &lt; in.txt &gt;&gt; log.txt</option>
+      </select></label>
+      <button type="button" id="rdNext" class="primary">Next syscall →</button>
+      <button type="button" id="rdReset">Reset</button>
+    </div>
+    <div class="row" style="align-items:flex-start; gap:20px; margin-top:12px">
+      <table class="mem" id="rdTable"></table>
+      <ol class="steps" id="rdSteps" style="flex:1; min-width:260px"></ol>
+    </div>
+    <p id="rdOut" style="margin:10px 0 0; font-weight:600"></p>
+  </div>
+  <div class="connect">Connection: fds 0, 1, 2 are inherited from getty/sshd through every fork + exec (3.7); Ctrl+C and Ctrl+Z come from the TTY driver, not the shell (4.5).</div>
+</section>
+
+<!-- 7.6 -->
+<section class="card" id="s7-6" data-title="7.6 Buffering">
+  <h2><span class="num">7.6</span>Buffered vs Unbuffered I/O: Two Buffers</h2>
+  <p class="lead">Text goes from <code>printf</code> into the stdio buffer in your process, then via <code>write()</code> into the page cache, then to disk. The stdio buffer is scaled down to 24 bytes here.</p>
+  <div class="demo">
+    <div class="row">
+      <button type="button" id="bfTty" class="primary">stdout = terminal (line-buffered)</button>
+      <button type="button" id="bfFile">stdout = out.txt (fully buffered)</button>
+    </div>
+    <div class="row" style="margin-top:8px; gap:6px">
+      <button type="button" data-bf="line">printf("hello\n")</button>
+      <button type="button" data-bf="part">printf("hi ")</button>
+      <button type="button" data-bf="flush">fflush(stdout)</button>
+      <button type="button" data-bf="fork">fork()</button>
+      <button type="button" data-bf="exit">exit()</button>
+      <button type="button" data-bf="kill">kill -9</button>
+      <button type="button" data-bf="wb">flusher writeback (~30 s)</button>
+      <button type="button" data-bf="fsync">fsync(fd)</button>
+      <button type="button" data-bf="power">power loss</button>
+      <button type="button" data-bf="reset">Reset</button>
+    </div>
+    <div class="cols" style="margin-top:12px" id="bfBoxes"></div>
+    <div class="log" id="bfLog"></div>
+  </div>
+  <div class="connect">Connection: the page cache is a write-back cache (2.4, 6.7); fork copies the stdio buffer because it's ordinary process memory (COW, 4.9).</div>
+</section>
+
+<!-- 7.7 -->
+<section class="card" id="s7-7" data-title="7.7 Blocking">
+  <h2><span class="num">7.7</span>Blocking vs Non-Blocking I/O</h2>
+  <p class="lead">A blocking read on an empty socket puts the task to sleep on a wait queue. A non-blocking read returns EAGAIN immediately.</p>
+  <div class="demo">
+    <div class="row">
+      <button type="button" id="blB" class="primary">blocking fd</button>
+      <button type="button" id="blN">O_NONBLOCK fd</button>
+      <button type="button" id="blRead">read(sock, buf, 100)</button>
+      <button type="button" id="blPkt">packet arrives</button>
+      <button type="button" id="blReset">Reset</button>
+    </div>
+    <div class="row" style="margin-top:12px; gap:16px">
+      <span>task: <span class="pill user" id="blState">R (running)</span></span>
+      <span>socket receive buffer: <b class="mono" id="blBuf">empty</b></span>
+      <span>socket wait queue: <b class="mono" id="blQ">[]</b></span>
+    </div>
+    <div class="log" id="blLog"></div>
+  </div>
+  <div class="connect">Connection: sleeping in S is a voluntary context switch (3.5); the wakeup comes from an interrupt and softirq (3.4); regular files ignore O_NONBLOCK (disk waits are state D).</div>
+</section>
+
+<!-- 7.8 -->
+<section class="card" id="s7-8" data-title="7.8 epoll">
+  <h2><span class="num">7.8</span>I/O Multiplexing: select/poll vs epoll</h2>
+  <p class="lead">select and poll make the kernel check every fd on every call. epoll remembers the interest list and keeps a ready list filled by wakeups.</p>
+  <div class="demo">
+    <div class="row">
+      <button type="button" id="mxNew">new events</button>
+      <button type="button" id="mxSelect" class="primary">select() / poll()</button>
+      <button type="button" id="mxEpoll">epoll_wait()</button>
+    </div>
+    <div class="fdgrid" id="mxGrid" style="margin-top:12px"></div>
+    <div class="row" style="margin-top:10px"><div class="stat"><span class="k">fds checked this call</span><span class="v" id="mxChecked">0</span></div><div class="stat"><span class="k">ready returned</span><span class="v" id="mxReady">0</span></div></div>
+  </div>
+  <div class="demo">
+    <h3>Cost per call as connections grow</h3>
+    <label class="inline">connections N <input type="range" id="mxN" min="1" max="5" step="1" value="3"> <b class="mono" id="mxNv"></b></label>
+    <label class="inline">ready per call k <input type="number" id="mxK" min="1" max="1000" value="10" style="width:80px"></label>
+    <div class="logbar" id="mxBars" style="margin-top:12px"></div>
+    <p class="hint" id="mxNote" style="margin:8px 0 0"></p>
+  </div>
+  <div class="connect">Connection: epoll is the engine of nginx, Node.js, Redis and Go's netpoller; it works on anything whose file_operations has a poll method (7.4).</div>
+</section>
+
+<!-- 7.9 -->
+<section class="card" id="s7-9" data-title="7.9 io_uring">
+  <h2><span class="num">7.9</span>io_uring: Two Shared Rings</h2>
+  <p class="lead">Queue operations into the submission ring in shared memory, submit many with one syscall (or none with SQPOLL), and reap results from the completion ring.</p>
+  <div class="demo">
+    <div class="row" style="gap:6px">
+      <button type="button" data-ur="read fd5">prep read(fd5)</button>
+      <button type="button" data-ur="write fd9">prep write(fd9)</button>
+      <button type="button" data-ur="accept 3">prep accept(3)</button>
+      <button type="button" id="urEnter" class="primary">io_uring_enter()</button>
+      <button type="button" id="urReap">reap completions</button>
+      <label class="inline"><input type="checkbox" id="urPoll"> SQPOLL (kernel thread polls the SQ)</label>
+      <button type="button" id="urReset">Reset</button>
+    </div>
+    <div class="stack" style="margin-top:22px; gap:26px">
+      <div><div class="hint" style="margin-bottom:18px">Submission Queue (user writes, kernel reads)</div><div class="ring" id="urSq"></div></div>
+      <div><div class="hint" style="margin-bottom:18px">Completion Queue (kernel writes, user reads)</div><div class="ring" id="urCq"></div></div>
+    </div>
+    <div class="row" style="margin-top:12px"><div class="stat"><span class="k">operations done</span><span class="v" id="urOps">0</span></div><div class="stat"><span class="k">syscalls with io_uring</span><span class="v ok" id="urSys">0</span></div><div class="stat"><span class="k">syscalls the classic way</span><span class="v bad" id="urClassic">0</span></div></div>
+  </div>
+  <div class="connect">Connection: the rings are set up with mmap (6.6) and avoid the per-syscall boundary cost (3.3, KPTI); some sandboxes block io_uring with seccomp (10.4).</div>
+</section>
+
+<!-- 7.10 -->
+<section class="card" id="s7-10" data-title="7.10 /proc /sys">
+  <h2><span class="num">7.10</span>Pseudo-Filesystems: /proc and /sys</h2>
+  <p class="lead">No disk behind these: the kernel generates the text when you read. Click a path.</p>
+  <div class="demo">
+    <div class="row" style="align-items:flex-start; gap:20px">
+      <div class="tree" id="pfTree" style="min-width:250px"></div>
+      <div style="flex:1; min-width:260px" class="stack"><b class="mono" id="pfPath"></b><pre class="exact" id="pfOut" style="white-space:pre-wrap; margin:0"></pre><p class="hint" id="pfWhy" style="margin:0"></p></div>
+    </div>
+  </div>
+  <div class="connect">Connection: /proc/&lt;pid&gt; is built from task_struct (4.2); /proc/sys is what sysctl reads and writes; /sys/fs/cgroup is the cgroup v2 tree (10.2).</div>
+</section>
+
+<!-- 7.11 -->
+<section class="card" id="s7-11" data-title="7.11 Permissions">
+  <h2><span class="num">7.11</span>Permissions, Ownership and setuid</h2>
+  <p class="lead">Edit the mode bits and see octal and <code>ls -l</code> update together. Then check who may do what. Only one class (owner, group or other) ever applies.</p>
+  <div class="demo">
+    <div class="row" style="align-items:flex-start; gap:24px">
+      <div class="stack">
+        <b>file <code>report.txt</code> (owner berat, group staff)</b>
+        <div id="pmFile"></div>
+      </div>
+      <div class="stack">
+        <b>its directory</b>
+        <select id="pmDirPreset" aria-label="directory preset">
+          <option value="home">/home/berat (berat:staff, 755)</option>
+          <option value="tmp">/tmp (root:root, 1777)</option>
+          <option value="shared">/srv/shared (root:staff, 2775)</option>
+        </select>
+        <div id="pmDir"></div>
+      </div>
+    </div>
+    <div style="overflow-x:auto; margin-top:14px"><table class="mem" id="pmWho"></table></div>
+    <p class="hint" style="margin:8px 0 0">Deleting needs w + x on the <b>directory</b>, not on the file. With the sticky bit, only the file's owner, the directory's owner or root may delete. Root bypasses read/write checks but needs at least one x bit to execute.</p>
+  </div>
+  <div class="connect">Connection: the kernel compares the inode's mode with task_struct->cred (4.2); setuid changes the effective UID at execve (4.9); capabilities split root's powers (10.4).</div>
+</section>
+
+<!-- 7.12 -->
+<section class="card" id="s7-12" data-title="7.12 Devices & udev">
+  <h2><span class="num">7.12</span>Device Files, udev and devtmpfs</h2>
+  <p class="lead">A device file has no data blocks: just a type and a major:minor number. The major picks the driver, the minor the instance.</p>
+  <div class="demo">
+    <div style="overflow-x:auto"><table class="mem" id="dvTable"></table></div>
+    <p id="dvOut" style="margin:10px 0 0"></p>
+  </div>
+  <div class="demo">
+    <h3>Plug in a USB stick</h3>
+    <div class="row"><button type="button" id="udNext" class="primary">Next →</button><button type="button" id="udReset">Reset</button></div>
+    <div class="row" style="align-items:flex-start; gap:20px; margin-top:12px">
+      <ol class="steps" id="udSteps" style="flex:1; min-width:280px"></ol>
+      <div class="box" style="min-width:230px"><h4>/dev</h4><div class="mono" id="udDev" style="font-size:13px; white-space:pre"></div></div>
+    </div>
+  </div>
+  <div class="connect">Connection: udev loads drivers with modprobe (3.1) and builds /dev/disk/by-uuid, which /etc/fstab and the kernel command line use (3.7).</div>
+</section>
+
+<!-- 7.13 -->
+<section class="card" id="s7-13" data-title="7.13 Mounts">
+  <h2><span class="num">7.13</span>Mounting, Bind Mounts and Symlinks</h2>
+  <p class="lead">One tree, many filesystems. Mount things, add a bind mount and a symlink, then look at the same paths from inside a container whose root is <code>/srv/ctr</code>.</p>
+  <div class="demo">
+    <div class="row" style="gap:6px">
+      <button type="button" id="mtUsb">mount /dev/sdc1 /mnt/usb</button>
+      <button type="button" id="mtBind">mount --bind /data/projects /srv/ctr/projects</button>
+      <button type="button" id="mtLink">ln -s /data/projects /srv/ctr/proj-link</button>
+      <button type="button" id="mtHost" class="primary">view: host</button>
+      <button type="button" id="mtCtr">view: inside container</button>
+      <button type="button" id="mtReset">Reset</button>
+    </div>
+    <div class="row" style="align-items:flex-start; gap:20px; margin-top:12px">
+      <pre class="exact" id="mtTree" style="margin:0; min-width:260px; white-space:pre"></pre>
+      <div style="flex:1; min-width:260px; overflow-x:auto"><table class="mem" id="mtRes"></table></div>
+    </div>
+  </div>
+  <div class="connect">Connection: a bind mount is how Docker volumes work; a container's absolute symlinks resolve against its own root after pivot_root (10.3).</div>
+</section>
+
+<!-- 7.14 -->
+<section class="card" id="s7-14" data-title="7.14 FHS">
+  <h2><span class="num">7.14</span>Linux Directory Hierarchy</h2>
+  <p class="lead">Click a directory to see what lives there.</p>
+  <div class="demo">
+    <div class="row" style="align-items:flex-start; gap:20px">
+      <div class="tree" id="fhTree" style="min-width:200px"></div>
+      <div style="flex:1; min-width:260px"><b class="mono" id="fhName"></b><p id="fhOut" style="margin:6px 0 0"></p></div>
+    </div>
+  </div>
+  <div class="connect">Connection: /proc and /sys are virtual (7.10); /dev is devtmpfs (7.12); /boot holds the kernel and initramfs (3.7); /lib holds shared libraries and modules (4.10, 3.1).</div>
+</section>
+
+<!-- 7.15 -->
+<section class="card" id="s7-15" data-title="7.15 Storage stack">
+  <h2><span class="num">7.15</span>The Storage Stack, I/O Schedulers and Journaling</h2>
+  <p class="lead">What happens below the page cache, and how filesystems and applications survive a crash.</p>
+  <div class="demo">
+    <h3>A write going down the stack</h3>
+    <button type="button" id="ssGo" class="primary">▶ write() then fsync()</button>
+    <div class="stack" id="ssLayers" style="gap:4px; margin-top:12px; max-width:640px"></div>
+  </div>
+  <div class="demo">
+    <h3>HDD: arrival order vs sorted order (why I/O schedulers reorder)</h3>
+    <div class="row"><button type="button" id="skNew">new requests</button><button type="button" id="skFifo" class="primary">▶ serve in arrival order</button><button type="button" id="skSort">▶ serve sorted (elevator)</button></div>
+    <div class="seekbar" id="skBar" style="margin-top:14px"></div>
+    <div class="row" style="margin-top:10px"><div class="stat"><span class="k">head travel</span><span class="v" id="skDist">0</span></div><span class="hint" id="skOrder"></span></div>
+    <p class="hint" style="margin:8px 0 0">Positions are track numbers 0–100 (scaled). On SSDs there's no seek, which is why <code>none</code> is the usual scheduler for NVMe.</p>
+  </div>
+  <div class="demo">
+    <h3>Crash while creating a file: no journal vs journal</h3>
+    <div class="row">
+      <button type="button" id="jnNo">ext2 (no journal)</button>
+      <button type="button" id="jnYes" class="primary">ext4 (journal)</button>
+      <button type="button" id="jnNext">Next step →</button>
+      <button type="button" id="jnCrash">💥 Crash now</button>
+      <button type="button" id="jnReset">Reset</button>
+    </div>
+    <ol class="steps" id="jnSteps" style="margin-top:12px"></ol>
+    <p id="jnOut" style="margin:10px 0 0; font-weight:600"></p>
+  </div>
+  <div class="demo">
+    <h3>Updating config.json: crash at any step</h3>
+    <div class="row">
+      <label class="inline">method <select id="suMode">
+        <option value="safe">safe: temp + fsync + rename + fsync(dir)</option>
+        <option value="nofsync">temp + rename, but no fsync(temp)</option>
+        <option value="inplace">rewrite in place</option>
+      </select></label>
+      <button type="button" id="suNext" class="primary">Next step →</button>
+      <button type="button" id="suCrash">💥 Crash now</button>
+      <button type="button" id="suReset">Reset</button>
+    </div>
+    <ol class="steps mono" id="suSteps" style="margin-top:12px; font-size:13px"></ol>
+    <p id="suOut" style="margin:10px 0 0; font-weight:600"></p>
+  </div>
+  <div class="connect">Connection: fsync pushes dirty page-cache pages (6.7) through the block layer and sends a FLUSH to the drive's cache; rename is atomic only within one filesystem (7.13).</div>
+</section>
+
+</main>
+
+<nav class="footnav" aria-label="Part pages">
+  <a href="part6-memory.html">← Part 6: Memory</a>
+  <a href="index.html">All visuals</a>
+  <a href="part8-signals.html">Part 8: Signals →</a>
+</nav>
+
+<script>
+(function () {
+  'use strict';
+  const $ = (id) => document.getElementById(id);
+  const h = (tag, props, ...kids) => {
+    const n = document.createElement(tag);
+    if (props) for (const k in props) {
+      if (k === 'class') n.className = props[k];
+      else if (k === 'style') n.style.cssText = props[k];
+      else if (k.startsWith('on')) n.addEventListener(k.slice(2), props[k]);
+      else n.setAttribute(k, props[k]);
+    }
+    for (const kid of kids.flat()) if (kid != null) n.append(kid);
+    return n;
+  };
+  const logTo = (id, msg) => { const l = $(id); l.textContent += (l.textContent ? '\n' : '') + msg; l.scrollTop = l.scrollHeight; };
+  const stat = (k, v, cls) => h('div', { class: 'stat' }, h('span', { class: 'k' }, k), h('span', { class: 'v' + (cls ? ' ' + cls : '') }, String(v)));
+  const TONES = ['blue', 'pink', 'green', 'amber', 'purple', 'red'];
+
+  /* ---------- theme ---------- */
+  const themeBtn = $('themeBtn');
+  function applyTheme(t) {
+    document.documentElement.setAttribute('data-theme', t);
+    themeBtn.innerHTML = t === 'dark' ? '&#9728;' : '&#9790;';
+    themeBtn.title = t === 'dark' ? 'Switch to light mode' : 'Switch to dark mode';
+  }
+  applyTheme(document.documentElement.getAttribute('data-theme'));
+  themeBtn.addEventListener('click', () => {
+    const t = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+    try { localStorage.setItem('theme', t); } catch (e) {}
+    applyTheme(t);
+  });
+
+  /* ---------- chips ---------- */
+  const chips = $('chips');
+  const sections = [...document.querySelectorAll('section.card')];
+  sections.forEach((s) => chips.append(h('a', { href: '#' + s.id }, s.dataset.title)));
+  const chipLinks = [...chips.children];
+  const io = new IntersectionObserver((entries) => {
+    entries.forEach((e) => {
+      if (!e.isIntersecting) return;
+      chipLinks.forEach((a) => a.classList.toggle('active', a.getAttribute('href') === '#' + e.target.id));
+      const act = chips.querySelector('.active');
+      if (act) act.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    });
+  }, { rootMargin: '-45% 0px -50% 0px' });
+  sections.forEach((s) => io.observe(s));
+
+  /* ---------- 7.1 ---------- */
+  let f1;
+  function f1Reset() { f1 = ['/dev/pts/0', '/dev/pts/0', '/dev/pts/0']; $('f1Log').textContent = ''; f1Draw(); }
+  const lowest = (arr) => { let i = 0; while (arr[i] != null) i++; return i; };
+  function f1Draw() {
+    const t = $('f1Table');
+    t.innerHTML = '';
+    t.append(h('tr', null, h('th', null, 'fd'), h('th', null, 'points to'), h('th', null, 'name')));
+    const n = Math.max(f1.length, 3) + 1;
+    const free = lowest(f1);
+    for (let i = 0; i < n; i++) {
+      const v = f1[i];
+      t.append(h('tr', { class: i === free ? 'sel' : '' }, h('td', null, String(i)), h('td', { class: 'l' }, v || (i === free ? '(free: next open() gets this)' : '(free)')),
+        h('td', null, i === 0 ? 'stdin' : i === 1 ? 'stdout' : i === 2 ? 'stderr' : '')));
+    }
+  }
+  function f1Open(name) { const fd = lowest(f1); f1[fd] = name; logTo('f1Log', `open("${name}", O_RDONLY) = ${fd}`); f1Draw(); }
+  function f1Close(fd) {
+    if (f1[fd] == null) logTo('f1Log', `close(${fd}) = -1 EBADF`);
+    else { f1[fd] = null; while (f1.length && f1[f1.length - 1] == null) f1.pop(); logTo('f1Log', `close(${fd}) = 0`); }
+    f1Draw();
+  }
+  $('f1Open').addEventListener('click', () => f1Open('data.txt'));
+  $('f1Open2').addEventListener('click', () => f1Open('log.txt'));
+  $('f1Close3').addEventListener('click', () => f1Close(3));
+  $('f1Close0').addEventListener('click', () => f1Close(0));
+  $('f1Reset').addEventListener('click', f1Reset);
+  f1Reset();
+
+  /* ---------- 7.2 ---------- */
+  let procs, files, fileSeq, pidSeq;
+  const INODES = { tty: { ino: 4, name: '/dev/pts/0', size: '-' }, log: { ino: 1234, name: 'log.txt', size: '8 KB' } };
+  function f2Reset() {
+    fileSeq = 1; pidSeq = 4000;
+    files = { f0: { id: 'f0', inode: 'tty', pos: null, refs: 3, tone: 'purple', label: 'file#0' } };
+    procs = [{ pid: pidSeq, name: 'A', fds: { 0: 'f0', 1: 'f0', 2: 'f0' } }];
+    $('f2Log').textContent = '';
+    f2Draw();
+  }
+  const fileChip = (fid) => h('span', { class: 'chip ' + files[fid].tone }, files[fid].label);
+  function f2Draw() {
+    const ps = $('f2Proc'), prevP = ps.value;
+    ps.innerHTML = '';
+    procs.forEach((p, i) => ps.append(h('option', { value: String(i) }, `${p.name} (pid ${p.pid})`)));
+    if (prevP && +prevP < procs.length) ps.value = prevP;
+    f2FdOptions();
+    const pc = $('f2Procs');
+    pc.innerHTML = '';
+    procs.forEach((p) => {
+      const t = h('table', { class: 'mem', style: 'width:100%' }, h('tr', null, h('th', { colspan: '2' }, `process ${p.name} (pid ${p.pid})`)));
+      Object.keys(p.fds).sort((a, b) => a - b).forEach((fd) => t.append(h('tr', null, h('td', null, 'fd ' + fd), h('td', null, '→ ', fileChip(p.fds[fd])))));
+      pc.append(t);
+    });
+    const fc = $('f2Files');
+    fc.innerHTML = '';
+    Object.values(files).forEach((f) => fc.append(h('div', { class: 'box', style: `border-color: var(--c-${f.tone})` },
+      h('div', null, fileChip(f.id), ` refs ${f.refs}`),
+      h('div', { class: 'mono', style: 'font-size:13px' }, `f_pos = ${f.pos == null ? '–' : f.pos}`, '   → inode ', String(INODES[f.inode].ino)))));
+    const ic = $('f2Inodes');
+    ic.innerHTML = '';
+    const used = {};
+    Object.values(files).forEach((f) => (used[f.inode] = (used[f.inode] || 0) + 1));
+    Object.keys(used).forEach((k) => ic.append(h('div', { class: 'box' },
+      h('b', { class: 'mono' }, `inode ${INODES[k].ino}`), h('div', { class: 'hint' }, `${INODES[k].name}, size ${INODES[k].size}`),
+      h('div', { class: 'hint' }, `${used[k]} open file description${used[k] > 1 ? 's point' : ' points'} here`))));
+  }
+  function f2FdOptions() {
+    const p = procs[+$('f2Proc').value || 0];
+    const fs = $('f2Fd'), prev = fs.value;
+    fs.innerHTML = '';
+    Object.keys(p.fds).sort((a, b) => a - b).forEach((fd) => fs.append(h('option', { value: fd }, fd)));
+    if (prev && p.fds[prev]) fs.value = prev; else if (p.fds[3]) fs.value = '3';
+  }
+  $('f2Proc').addEventListener('change', f2FdOptions);
+  const curP = () => procs[+$('f2Proc').value || 0];
+  const lowestFd = (fds) => { let i = 0; while (fds[i] != null) i++; return i; };
+  $('f2Open').addEventListener('click', () => {
+    const p = curP();
+    const id = 'f' + fileSeq;
+    files[id] = { id, inode: 'log', pos: 0, refs: 1, tone: TONES[(fileSeq - 1) % 5], label: 'file#' + fileSeq };
+    fileSeq++;
+    const fd = lowestFd(p.fds);
+    p.fds[fd] = id;
+    logTo('f2Log', `${p.name}: open("log.txt") = ${fd}  → NEW struct file ${files[id].label} with its own offset 0, same inode 1234`);
+    f2Draw(); $('f2Fd').value = String(fd);
+  });
+  $('f2Read').addEventListener('click', () => {
+    const p = curP(), fd = $('f2Fd').value, fid = p.fds[fd];
+    if (!fid) return;
+    const f = files[fid];
+    if (f.pos == null) { logTo('f2Log', `${p.name}: read(${fd}) on the terminal waits for keystrokes (no file offset)`); return; }
+    f.pos += 100;
+    const sharers = procs.filter((q) => Object.values(q.fds).includes(fid)).map((q) => q.name);
+    logTo('f2Log', `${p.name}: read(${fd}, 100) → ${f.label}.f_pos = ${f.pos}` + (sharers.length > 1 || f.refs > 1 ? `  (shared by every fd pointing to ${f.label})` : ''));
+    f2Draw(); $('f2Fd').value = fd;
+  });
+  $('f2Dup').addEventListener('click', () => {
+    const p = curP(), fd = $('f2Fd').value, fid = p.fds[fd];
+    if (!fid) return;
+    const nfd = lowestFd(p.fds);
+    p.fds[nfd] = fid; files[fid].refs++;
+    logTo('f2Log', `${p.name}: dup(${fd}) = ${nfd}  → same struct file ${files[fid].label}, shared offset`);
+    f2Draw();
+  });
+  $('f2Close').addEventListener('click', () => {
+    const p = curP(), fd = $('f2Fd').value, fid = p.fds[fd];
+    if (!fid) return;
+    delete p.fds[fd];
+    files[fid].refs--;
+    let msg = `${p.name}: close(${fd})  → ${files[fid].label} refs ${files[fid].refs}`;
+    if (files[fid].refs === 0) { msg += ' → freed'; delete files[fid]; }
+    logTo('f2Log', msg);
+    f2Draw();
+  });
+  $('f2Fork').addEventListener('click', () => {
+    const p = curP();
+    if (procs.length >= 3) { logTo('f2Log', '(demo limit: 3 processes)'); return; }
+    const child = { pid: ++pidSeq, name: String.fromCharCode(65 + procs.length), fds: { ...p.fds } };
+    Object.values(child.fds).forEach((fid) => files[fid].refs++);
+    procs.push(child);
+    logTo('f2Log', `${p.name}: fork() → child ${child.name} (pid ${child.pid}) gets a COPY of the fd table; every entry points to the SAME struct files (refs +1 each)`);
+    f2Draw();
+  });
+  $('f2Reset').addEventListener('click', f2Reset);
+  f2Reset();
+
+  /* ---------- 7.3 disk layout ---------- */
+  const DISK = [
+    ['Superblock', 1, 'amber', 'Filesystem-level metadata: total size, block size (usually 4 KB), inode count, free counts, UUID, state. Backup copies live in other block groups.'],
+    ['Group descriptors + block bitmap', 1.4, 'purple', 'Where each block group starts, and one bit per data block: used or free.'],
+    ['Inode bitmap', 0.8, 'pink', 'One bit per inode: used or free. Creating a file flips a bit here.'],
+    ['Inode table', 3, 'blue', 'A fixed number of 256-byte inodes, decided at mkfs time. You can run out of inodes with free space left (df -i).'],
+    ['Data blocks', 9, 'green', 'File contents, and also directory contents (name → inode lists) and indirect/extent blocks.'],
+  ];
+  const SHORT = ['SB', 'groups', 'i-bmp', 'Inode table', 'Data blocks'];
+  DISK.forEach(([name, w, tone, desc], i) => {
+    const seg = h('div', { style: `flex:${w}; background: var(--c-${tone}-soft); border-right: 1px solid var(--border); padding: 0 4px; font-size:12px`, title: name }, SHORT[i]);
+    seg.addEventListener('click', () => { $('f3DiskOut').innerHTML = ''; $('f3DiskOut').append(h('b', null, name + ': '), desc); });
+    $('f3Disk').append(seg);
+  });
+  $('f3Disk').firstChild.click();
+
+  /* ---------- 7.3 directory + stat ---------- */
+  const DIR = [
+    ['.', 1835000, 'directory', { Size: '4096', Blocks: '8', Links: '4', Mode: 'drwxr-x--- (0750)', Uid: '1000 berat', Gid: '1000 berat', ctime: '2026-10-16 09:12', mtime: '2026-10-16 09:12', atime: '2026-10-17 08:00', 'btime (Birth)': '2025-03-02 14:20', Data: 'directory entries in block 7340040' }],
+    ['..', 1310721, 'directory', { Size: '4096', Links: '5', Mode: 'drwxr-xr-x (0755)', Uid: '0 root', Data: 'the parent: /home' }],
+    ['notes.txt', 1835123, 'regular file', { Size: '14', Blocks: '8 (one 4 KB block)', Links: '1', Mode: '-rw-r--r-- (0644)', Uid: '1000 berat', Gid: '1000 berat', atime: '2026-10-16 10:01', mtime: '2026-10-16 10:00 (content changed)', ctime: '2026-10-16 10:00 (inode changed)', 'btime (Birth)': '2026-10-01 18:45 (created)', Data: 'extent: block 7340100, length 1' }],
+    ['big.iso', 1835124, 'regular file', { Size: '4.7 GB', Blocks: '9.2 million 512-byte units', Links: '2 (hard linked as backup.iso)', Mode: '-rw-r--r-- (0644)', Uid: '1000 berat', mtime: '2026-09-20 11:00', ctime: '2026-10-02 08:30 (link count changed)', 'btime (Birth)': '2026-09-20 10:58', Data: 'extents: 8,000,000 blocks starting 9437184 (ext4 uses extents, not a pointer per block)' }],
+    ['link-to-notes', 1835130, 'symlink', { Size: '9 (= length of "notes.txt")', Blocks: '0 (short target stored inside the inode)', Links: '1', Mode: 'lrwxrwxrwx', Data: 'target path: "notes.txt"' }],
+  ];
+  let dirSel = 2;
+  function dirDraw() {
+    const t = $('f3Dir');
+    t.innerHTML = '';
+    t.append(h('tr', null, h('th', null, 'name'), h('th', null, 'inode #')));
+    DIR.forEach(([name, ino], i) => {
+      const tr = h('tr', { class: 'click' + (i === dirSel ? ' sel' : '') }, h('td', { class: 'l' }, name), h('td', null, String(ino)));
+      tr.addEventListener('click', () => { dirSel = i; dirDraw(); });
+      t.append(tr);
+    });
+    const [name, ino, type, st] = DIR[dirSel];
+    const s = $('f3Stat');
+    s.innerHTML = '';
+    s.append(h('tr', null, h('th', null, 'field'), h('th', null, `inode ${ino} (${type})`)));
+    Object.entries(st).forEach(([k, v]) => s.append(h('tr', null, h('td', { class: 'l' }, k), h('td', { class: 'l', style: 'font-family: inherit; font-size: 13px' }, v))));
+    s.append(h('tr', null, h('td', { class: 'l' }, 'filename?'), h('td', { class: 'l bad', style: 'font-family: inherit; font-size: 13px' }, `not stored here: "${name}" lives in the directory entry`)));
+  }
+  dirDraw();
+
+  /* ---------- 7.3 links ---------- */
+  let lnEntries, lnInodes;
+  function lnReset() {
+    lnEntries = [{ dir: '/mnt/usb', name: 'photo.jpg', ino: 500, fs: 'sdc1' }];
+    lnInodes = { 'sdc1:500': { fs: 'sdc1', ino: 500, type: 'file', links: 1, data: '(JPEG bytes)' } };
+    $('lnLog').textContent = '';
+    lnDraw();
+  }
+  const home = (name) => lnEntries.find((e) => e.dir === '/home/berat' && e.name === name);
+  function lnDraw() {
+    const d = $('lnDir');
+    d.innerHTML = '';
+    d.append(h('tr', null, h('th', null, 'path'), h('th', null, 'inode'), h('th', null, 'fs')));
+    lnEntries.forEach((e) => d.append(h('tr', null, h('td', { class: 'l' }, `${e.dir}/${e.name}`), h('td', null, String(e.ino)), h('td', null, e.fs))));
+    const t = $('lnIno');
+    t.innerHTML = '';
+    t.append(h('tr', null, h('th', null, 'fs:inode'), h('th', null, 'type'), h('th', null, 'links'), h('th', null, 'content')));
+    Object.entries(lnInodes).forEach(([k, v]) => t.append(h('tr', null, h('td', null, k), h('td', null, v.type), h('td', { class: v.links === 0 ? 'bad' : '' }, String(v.links)), h('td', { class: 'l' }, v.type === 'symlink' ? `path "${v.data}"` : v.data))));
+  }
+  function resolve(name, depth) {
+    const e = home(name);
+    if (!e) return { err: 'ENOENT' };
+    const ind = lnInodes[`${e.fs}:${e.ino}`];
+    if (ind.type === 'symlink') {
+      if (depth > 40) return { err: 'ELOOP' };
+      if (ind.data.startsWith('/mnt/usb/')) {
+        const u = lnEntries.find((x) => x.dir === '/mnt/usb' && x.name === ind.data.slice(9));
+        return u ? { ind: lnInodes[`sdc1:${u.ino}`], via: ind.data } : { err: 'ENOENT', via: ind.data };
+      }
+      const r = resolve(ind.data, depth + 1);
+      r.via = ind.data;
+      return r;
+    }
+    return { ind };
+  }
+  document.querySelectorAll('[data-ln]').forEach((b) => b.addEventListener('click', () => {
+    const a = b.dataset.ln;
+    const L = (m) => logTo('lnLog', m);
+    if (a === 'reset') return lnReset();
+    if (a === 'create') {
+      if (home('myfile.txt')) return L('myfile.txt already exists');
+      lnInodes['nvme:500'] = { fs: 'nvme', ino: 500, type: 'file', links: 1, data: '"hi\\n"' };
+      lnEntries.push({ dir: '/home/berat', name: 'myfile.txt', ino: 500, fs: 'nvme' });
+      L('created myfile.txt → inode 500 on nvme. Note: /mnt/usb/photo.jpg is ALSO inode 500, on another fs. (device, inode) is the real identity.');
+    } else if (a === 'hard') {
+      const e = home('myfile.txt');
+      if (!e) return L('ln: myfile.txt: No such file or directory');
+      if (home('hard')) return L('hard already exists');
+      lnEntries.push({ dir: '/home/berat', name: 'hard', ino: e.ino, fs: e.fs });
+      lnInodes[`${e.fs}:${e.ino}`].links++;
+      L('ln myfile.txt hard → a second NAME for inode 500. Link count 2. No new inode, no copied data.');
+    } else if (a === 'soft') {
+      if (home('soft')) return L('soft already exists');
+      lnInodes['nvme:501'] = { fs: 'nvme', ino: 501, type: 'symlink', links: 1, data: 'myfile.txt' };
+      lnEntries.push({ dir: '/home/berat', name: 'soft', ino: 501, fs: 'nvme' });
+      L('ln -s myfile.txt soft → a NEW inode 501 whose content is the path "myfile.txt" (size 10).');
+    } else if (a === 'rm') {
+      const e = home('myfile.txt');
+      if (!e) return L('rm: myfile.txt: No such file or directory');
+      lnEntries.splice(lnEntries.indexOf(e), 1);
+      const ind = lnInodes[`${e.fs}:${e.ino}`];
+      ind.links--;
+      if (ind.links === 0) { delete lnInodes[`${e.fs}:${e.ino}`]; L('unlink("myfile.txt") → link count 0 and nobody has it open → inode 500 and its data freed.'); }
+      else L(`unlink("myfile.txt") → only the NAME is removed. Inode 500 still has ${ind.links} link(s): the data survives.`);
+    } else if (a === 'mv') {
+      const e = home('hard');
+      if (!e) return L('mv: hard: No such file or directory');
+      e.name = 'renamed';
+      L('mv hard renamed → rename() on the same fs: only the directory entry changes. Same inode, instant, atomic.');
+    } else if (a === 'catsoft') {
+      const r = resolve('soft', 0);
+      if (!home('soft')) return L('cat: soft: No such file or directory');
+      L(r.err ? `cat soft → follows path "${r.via || 'myfile.txt'}" → ${r.err}: dangling symlink!` : `cat soft → follows "${r.via}" → inode ${r.ind.ino} → ${r.ind.data}`);
+    } else if (a === 'cathard') {
+      const n = home('hard') ? 'hard' : home('renamed') ? 'renamed' : null;
+      if (!n) return L('cat: no hard link exists yet');
+      const r = resolve(n, 0);
+      L(`cat ${n} → inode ${r.ind.ino} directly → ${r.ind.data}`);
+    } else if (a === 'xdev') {
+      L('ln /mnt/usb/photo.jpg p → ln: failed to create hard link: Invalid cross-device link (EXDEV). A directory entry on nvme can only store an inode number, which means nothing on sdc1.');
+    } else if (a === 'xsoft') {
+      if (home('p-link')) return L('p-link already exists');
+      lnInodes['nvme:502'] = { fs: 'nvme', ino: 502, type: 'symlink', links: 1, data: '/mnt/usb/photo.jpg' };
+      lnEntries.push({ dir: '/home/berat', name: 'p-link', ino: 502, fs: 'nvme' });
+      L('ln -s /mnt/usb/photo.jpg p-link → works: a symlink is just a path, resolved at access time across mounts. (It dangles if the USB is unmounted.)');
+    }
+    lnDraw();
+  }));
+  lnReset();
+
+  /* ---------- 7.3 path walk ---------- */
+  const PW = [
+    { seg: '/', text: 'Start at the process root (task_struct->fs->root): "/" is inode 2 on nvme0n1p2.' },
+    { seg: 'home', text: 'Need x on "/". Look up "home" in "/": dentry cache hit → inode 1310721.' },
+    { seg: 'berat', text: 'Need x on /home. Look up "berat" → inode 1835000.' },
+    { seg: 'docs', text: 'Need x on /home/berat. Look up "docs" → inode 1835140 is a SYMLINK with content "/data/docs". Resolution restarts at "/" with "/data/docs" + the remaining "notes.txt" (symlinks followed: 1 of max 40).', tone: 'pink' },
+    { seg: 'data', text: 'From "/", look up "data" → this dentry is a MOUNT POINT: jump to the root inode of the filesystem on /dev/sdb1.', tone: 'amber' },
+    { seg: 'docs', text: 'Look up "docs" on sdb1 → a normal directory.' },
+    { seg: 'notes.txt', text: 'Look up "notes.txt" → inode 9001 on sdb1. Check r permission on it, create a struct file, return an fd. Identity: (sdb1, 9001).', tone: 'green' },
+  ];
+  let pwStep = -1, pwTimer = null;
+  function pwDraw() {
+    const path = $('pwPath');
+    path.innerHTML = '';
+    PW.forEach((s, i) => path.append(h('span', { class: 'chip' + (i <= pwStep ? ' ' + (s.tone || 'blue') : '') }, s.seg)));
+    const ol = $('pwSteps');
+    ol.innerHTML = '';
+    PW.slice(0, pwStep + 1).forEach((s, i) => ol.append(h('li', { class: i === pwStep ? 'now' : 'done' }, `${i + 1}. ${s.text}`)));
+    $('pwNext').disabled = pwStep >= PW.length - 1;
+  }
+  $('pwNext').addEventListener('click', () => { clearInterval(pwTimer); pwStep++; pwDraw(); });
+  $('pwReset').addEventListener('click', () => { clearInterval(pwTimer); pwStep = -1; pwDraw(); });
+  $('pwLoop').addEventListener('click', () => {
+    clearInterval(pwTimer);
+    $('pwPath').innerHTML = '';
+    const ol = $('pwSteps');
+    ol.innerHTML = '';
+    const li = h('li', { class: 'now' }, '');
+    ol.append(li);
+    let n = 0;
+    pwTimer = setInterval(() => {
+      n++;
+      li.textContent = `open("a"): a → b → a → b … symlinks followed: ${n}`;
+      if (n >= 40) {
+        clearInterval(pwTimer);
+        ol.append(h('li', { class: 'now', style: 'border-color: var(--c-red); background: var(--c-red-soft)' }, 'Limit reached: open() fails with ELOOP "Too many levels of symbolic links". The kernel bounds the work instead of detecting cycles.'));
+        li.className = 'done';
+      }
+    }, 45);
+  });
+  pwDraw();
+
+  /* ---------- 7.3 unlink with open fd ---------- */
+  let ul;
+  function ulReset() { ul = { exists: true, open: false, size: 2, other: 8, total: 20 }; $('ulLog').textContent = ''; ulDraw(); }
+  function ulDraw() {
+    const allocated = ul.other + ((ul.exists || ul.open) ? ul.size : 0);
+    const visible = ul.other + (ul.exists ? ul.size : 0);
+    const st = $('ulStats');
+    st.innerHTML = '';
+    st.append(stat('name app.log', ul.exists ? 'exists' : 'gone', ul.exists ? 'ok' : 'bad'), stat('open by java', ul.open ? 'yes (fd 7)' : 'no'),
+      stat('inode links', ul.exists ? 1 : 0), stat('df used', allocated + ' GB'), stat('du sum', visible + ' GB', allocated !== visible ? 'bad' : 'ok'));
+    const bar = (id, other, file, ghost) => {
+      const b = $(id);
+      b.innerHTML = '';
+      b.append(h('div', { style: `flex:${other}; background: var(--c-blue-soft)` }, `other ${other} GB`));
+      if (file) b.append(h('div', { style: `flex:${file}; background: ${ghost ? 'var(--hatch), var(--c-red-soft)' : 'var(--c-amber-soft)'}` }, ghost ? `deleted ${file} GB` : `app.log ${file} GB`));
+      b.append(h('div', { style: `flex:${ul.total - other - file}` }, 'free'));
+    };
+    bar('ulDf', ul.other, (ul.exists || ul.open) ? ul.size : 0, !ul.exists && ul.open);
+    bar('ulDu', ul.other, ul.exists ? ul.size : 0, false);
+  }
+  document.querySelectorAll('[data-ul]').forEach((b) => b.addEventListener('click', () => {
+    const a = b.dataset.ul, L = (m) => logTo('ulLog', m);
+    if (a === 'reset') return ulReset();
+    if (a === 'open') { if (!ul.exists) return L('open: No such file'); ul.open = true; L('java (pid 2211) opens app.log for writing → fd 7'); }
+    if (a === 'grow') { if (!ul.open) return L('nobody is writing'); ul.size = Math.min(ul.size + 2, 11); L(`java writes → app.log is now ${ul.size} GB`); }
+    if (a === 'rm') { if (!ul.exists) return L('rm: No such file'); ul.exists = false; L(ul.open ? 'rm app.log → name gone, link count 0, but fd 7 still references the inode → the space is NOT freed. du no longer sees it; df still counts it.' : 'rm app.log → link count 0, not open → freed.'); if (!ul.open) ul.size = 0; }
+    if (a === 'trunc') { if (!ul.open) return L('no open fd to truncate'); ul.size = 0; L(': > /proc/2211/fd/7 → truncates the deleted file in place through /proc: space freed without restarting.'); }
+    if (a === 'close') { if (!ul.open) return L('java has nothing open'); ul.open = false; if (!ul.exists) ul.size = 0; L('java restarts → fd 7 closed → last reference gone → inode and blocks freed (if the name was deleted).'); }
+    ulDraw();
+  }));
+  ulReset();
+
+  /* ---------- 7.4 VFS ---------- */
+  const VFS = [
+    ['ext4 file', 'ext4: ext4_file_read_iter()', 'page cache → block layer → NVMe driver (DMA)', 'Looks up the page cache by (inode, offset); on a miss the block layer reads from disk.'],
+    ['/proc/self/status', 'procfs: generate text', 'kernel data structures (task_struct)', 'No disk at all: the text is formatted on the spot from the task_struct.'],
+    ['pipe', 'pipefs: pipe_read()', 'kernel pipe buffer (64 KiB)', 'Copies bytes out of the pipe buffer; sleeps if empty; returns 0 when all writers closed.'],
+    ['terminal', 'tty: n_tty_read()', 'TTY line discipline buffer ← your keystrokes', 'Returns a line once you press Enter (canonical mode).'],
+    ['TCP socket', 'sockfs: sock_read_iter()', 'TCP/IP stack ← NIC (DMA + softirq)', 'Copies from the socket receive buffer filled by the network stack.'],
+    ['sshfs (FUSE)', 'fuse: request to /dev/fuse', 'user-space daemon → network', 'Forwards the request to a user-space program, which fetches the data over SSH and replies.'],
+  ];
+  let vfsSel = 0;
+  function vfsDraw() {
+    const btns = $('vfsBtns');
+    btns.innerHTML = '';
+    VFS.forEach((v, i) => btns.append(h('button', { type: 'button', class: i === vfsSel ? 'primary' : '', onclick: () => { vfsSel = i; vfsDraw(); } }, v[0])));
+    const lane = $('vfsImpl');
+    lane.innerHTML = '';
+    VFS.forEach((v, i) => lane.append(h('div', { class: 'layer' + (i === vfsSel ? ' on' : ''), style: 'font-size:12px' }, v[1])));
+    $('vfsBottom').textContent = VFS[vfsSel][2];
+    $('vfsOut').textContent = VFS[vfsSel][3];
+  }
+  vfsDraw();
+
+  /* ---------- 7.5 redirection ---------- */
+  const RD = {
+    a: { ops: [['open("out.txt", O_WRONLY|O_CREAT|O_TRUNC) = 3', { 3: 'out' }], ['dup2(3, 1): fd 1 now points to out.txt', { 1: 'out' }], ['close(3)', { 3: null }], ['dup2(1, 2): fd 2 copies fd 1 (out.txt, same struct file, shared offset)', { 2: 'out' }], ['execve("cmd")', {}]],
+         out: 'stdout → out.txt, stderr → out.txt (both through one struct file, so they append in order).' },
+    b: { ops: [['dup2(1, 2): fd 2 copies fd 1 which is STILL the terminal', { 2: 'tty' }], ['open("out.txt", …) = 3', { 3: 'out' }], ['dup2(3, 1): only fd 1 moves to out.txt', { 1: 'out' }], ['close(3)', { 3: null }], ['execve("cmd")', {}]],
+         out: 'stdout → out.txt, but stderr → terminal. Left-to-right order matters!' },
+    c: { ops: [['open("err.txt", …) = 3', { 3: 'err' }], ['dup2(3, 2)', { 2: 'err' }], ['close(3)', { 3: null }], ['open("out.txt", …) = 3', { 3: 'out' }], ['dup2(3, 1)', { 1: 'out' }], ['close(3)', { 3: null }], ['execve("cmd")', {}]],
+         out: 'stdout → out.txt, stderr → err.txt (two separate struct files).' },
+    d: { ops: [['open("in.txt", O_RDONLY) = 3', { 3: 'in' }], ['dup2(3, 0): stdin reads from in.txt', { 0: 'in' }], ['close(3)', { 3: null }], ['open("log.txt", O_WRONLY|O_CREAT|O_APPEND) = 3', { 3: 'log' }], ['dup2(3, 1)', { 1: 'log' }], ['close(3)', { 3: null }], ['execve("cmd")', {}]],
+         out: 'stdin ← in.txt, stdout → log.txt in append mode (every write goes to the end), stderr → terminal.' },
+  };
+  const RDNAME = { tty: '/dev/pts/0 (terminal)', out: 'out.txt', err: 'err.txt', in: 'in.txt', log: 'log.txt (O_APPEND)' };
+  const RDTONE = { tty: 'purple', out: 'blue', err: 'red', in: 'green', log: 'amber' };
+  let rdStep = 0;
+  function rdDraw() {
+    const r = RD[$('rdCmd').value];
+    const fds = { 0: 'tty', 1: 'tty', 2: 'tty' };
+    r.ops.slice(0, rdStep).forEach(([, ch]) => Object.entries(ch).forEach(([k, v]) => { if (v == null) delete fds[k]; else fds[k] = v; }));
+    const t = $('rdTable');
+    t.innerHTML = '';
+    t.append(h('tr', null, h('th', null, 'fd'), h('th', null, 'points to')));
+    [0, 1, 2, 3].forEach((fd) => t.append(h('tr', null, h('td', null, `${fd}${fd < 3 ? ' (' + ['stdin', 'stdout', 'stderr'][fd] + ')' : ''}`),
+      h('td', null, fds[fd] ? h('span', { class: 'chip ' + RDTONE[fds[fd]] }, RDNAME[fds[fd]]) : h('span', { class: 'hint' }, '(closed)')))));
+    const ol = $('rdSteps');
+    ol.innerHTML = '';
+    r.ops.forEach(([txt], i) => ol.append(h('li', { class: i < rdStep - 1 ? 'done' : i === rdStep - 1 ? 'now' : '', style: i >= rdStep ? 'opacity:.4' : '' }, `${i + 1}. ${txt}`)));
+    $('rdOut').textContent = rdStep >= r.ops.length ? 'Result: ' + r.out : '';
+    $('rdNext').disabled = rdStep >= r.ops.length;
+  }
+  $('rdNext').addEventListener('click', () => { rdStep++; rdDraw(); });
+  $('rdReset').addEventListener('click', () => { rdStep = 0; rdDraw(); });
+  $('rdCmd').addEventListener('change', () => { rdStep = 0; rdDraw(); });
+  rdDraw();
+
+  /* ---------- 7.6 buffering ---------- */
+  const BUFCAP = 24;
+  let bf;
+  function bfReset(mode) { bf = { mode: mode || (bf ? bf.mode : 'tty'), procs: [{ name: 'parent', buf: '' }], screen: '', cache: '', disk: '' }; $('bfLog').textContent = ''; bfDraw(); }
+  function bfFlush(p) {
+    if (!p.buf) return;
+    if (bf.mode === 'tty') { bf.screen += p.buf; logTo('bfLog', `${p.name}: write(1, "${p.buf.replace(/\n/g, '\\n')}") → terminal`); }
+    else { bf.cache += p.buf; logTo('bfLog', `${p.name}: write(1, "${p.buf.replace(/\n/g, '\\n')}") → page cache (dirty), write() returns immediately`); }
+    p.buf = '';
+  }
+  function bfAdd(text) {
+    bf.procs.forEach((p) => {
+      p.buf += text;
+      if (bf.mode === 'tty' && text.includes('\n')) bfFlush(p);
+      else if (p.buf.length >= BUFCAP) { logTo('bfLog', `${p.name}: stdio buffer full`); bfFlush(p); }
+    });
+  }
+  function bfDraw() {
+    $('bfTty').classList.toggle('primary', bf.mode === 'tty');
+    $('bfFile').classList.toggle('primary', bf.mode === 'file');
+    const c = $('bfBoxes');
+    c.innerHTML = '';
+    const show = (s) => s ? s.replace(/\n/g, '⏎\n') : '(empty)';
+    if (!bf.procs.length) c.append(h('div', { class: 'box' }, h('h4', null, 'processes'), h('div', { class: 'hint' }, 'none running')));
+    bf.procs.forEach((p) => c.append(h('div', { class: 'box', style: 'border-color: var(--c-blue)' }, h('h4', null, `stdio buffer: ${p.name} (user memory)`),
+      h('pre', { class: 'mono', style: 'margin:0; white-space:pre-wrap; font-size:13px' }, show(p.buf)), h('div', { class: 'hint' }, `${p.buf.length}/${BUFCAP} bytes`))));
+    if (bf.mode === 'tty') c.append(h('div', { class: 'box' }, h('h4', null, 'terminal screen'), h('pre', { class: 'mono', style: 'margin:0; white-space:pre-wrap; font-size:13px' }, show(bf.screen))));
+    else {
+      c.append(h('div', { class: 'box', style: 'border-color: var(--c-amber)' }, h('h4', null, 'page cache: out.txt (kernel RAM, dirty)'), h('pre', { class: 'mono', style: 'margin:0; white-space:pre-wrap; font-size:13px' }, show(bf.cache))));
+      c.append(h('div', { class: 'box', style: 'border-color: var(--c-green)' }, h('h4', null, 'disk'), h('pre', { class: 'mono', style: 'margin:0; white-space:pre-wrap; font-size:13px' }, show(bf.disk))));
+    }
+  }
+  document.querySelectorAll('[data-bf]').forEach((b) => b.addEventListener('click', () => {
+    const a = b.dataset.bf, L = (m) => logTo('bfLog', m);
+    if (a === 'reset') return bfReset();
+    if (['line', 'part', 'flush', 'fork', 'exit', 'kill'].includes(a) && !bf.procs.length) { L('no process running (Reset)'); return; }
+    if (a === 'line') bfAdd('hello\n');
+    if (a === 'part') bfAdd('hi ');
+    if (a === 'flush') bf.procs.forEach(bfFlush);
+    if (a === 'fork') {
+      if (bf.procs.length > 1) { L('(demo: one fork)'); return; }
+      bf.procs.push({ name: 'child', buf: bf.procs[0].buf });
+      L(bf.procs[0].buf ? `fork() → the child gets a COPY of the unflushed buffer "${bf.procs[0].buf.replace(/\n/g, '\\n')}": it will be output twice!` : 'fork() → child has an empty buffer too (nothing pending).');
+    }
+    if (a === 'exit') { bf.procs.forEach((p) => { L(`${p.name}: exit() flushes stdio`); bfFlush(p); }); bf.procs = []; }
+    if (a === 'kill') { bf.procs.forEach((p) => p.buf && L(`${p.name}: killed by SIGKILL → "${p.buf.replace(/\n/g, '\\n')}" lost (it only existed in its memory)`)); bf.procs = []; L('kill -9: no exit handlers, no flush'); }
+    if (a === 'wb' || a === 'fsync') {
+      if (bf.mode === 'tty') { L('(terminal output has no page cache: switch to stdout = out.txt)'); return; }
+      bf.disk += bf.cache; bf.cache = '';
+      L(a === 'fsync' ? 'fsync(fd) → blocks until out.txt\'s dirty pages are on stable storage' : 'flusher thread wrote dirty pages to disk (pages now clean)');
+    }
+    if (a === 'power') {
+      bf.procs.forEach((p) => p.buf && L(`${p.name}'s stdio buffer lost`));
+      if (bf.cache) L(`dirty page cache lost: "${bf.cache.replace(/\n/g, '\\n')}" never reached the disk, although write() had returned success`);
+      bf.procs = []; bf.cache = ''; bf.screen = '';
+      L('power loss: only what was on disk survives');
+    }
+    bfDraw();
+  }));
+  $('bfTty').addEventListener('click', () => bfReset('tty'));
+  $('bfFile').addEventListener('click', () => bfReset('file'));
+  bfReset('tty');
+
+  /* ---------- 7.7 blocking ---------- */
+  let bl;
+  function blReset(mode) { bl = { mode: mode || (bl ? bl.mode : 'block'), state: 'R', buf: 0, waiting: false }; $('blLog').textContent = ''; blDraw(); }
+  function blDraw() {
+    $('blB').classList.toggle('primary', bl.mode === 'block');
+    $('blN').classList.toggle('primary', bl.mode === 'nonblock');
+    const p = $('blState');
+    p.textContent = bl.state === 'S' ? 'S (sleeping)' : 'R (running)';
+    p.className = 'pill ' + (bl.state === 'S' ? 'sleep' : 'user');
+    $('blBuf').textContent = bl.buf ? `${bl.buf} bytes` : 'empty';
+    $('blQ').textContent = bl.waiting ? '[ task 4321 ]' : '[]';
+  }
+  $('blRead').addEventListener('click', () => {
+    if (bl.state === 'S') { logTo('blLog', '(the task is asleep; it can\'t call anything)'); return; }
+    if (bl.buf) { logTo('blLog', `read() = ${bl.buf}: data was already there`); bl.buf = 0; }
+    else if (bl.mode === 'nonblock') logTo('blLog', 'read() = -1, errno = EAGAIN: "nothing yet, try later" (returns immediately, task keeps running)');
+    else { bl.state = 'S'; bl.waiting = true; logTo('blLog', 'read(): no data → task added to the socket\'s wait queue, state S, schedule() runs someone else (voluntary context switch)'); }
+    blDraw();
+  });
+  $('blPkt').addEventListener('click', () => {
+    logTo('blLog', 'packet arrives → NIC DMA → interrupt → NET_RX softirq → TCP queues 100 bytes on the socket');
+    bl.buf += 100;
+    if (bl.waiting) { logTo('blLog', 'wake_up(wait queue) → task becomes R, back on a run queue → read() copies the data and returns 100'); bl.waiting = false; bl.state = 'R'; bl.buf = 0; }
+    else if (bl.mode === 'nonblock') logTo('blLog', '(epoll would now report the fd as readable: 7.8)');
+    blDraw();
+  });
+  $('blB').addEventListener('click', () => blReset('block'));
+  $('blN').addEventListener('click', () => blReset('nonblock'));
+  $('blReset').addEventListener('click', () => blReset());
+  blReset('block');
+
+  /* ---------- 7.8 epoll ---------- */
+  const mxCells = [];
+  let mxReady = new Set(), mxTimer = null;
+  for (let i = 0; i < 64; i++) { const c = h('div', { class: 'cell' }, String(i + 3)); mxCells.push(c); $('mxGrid').append(c); }
+  function mxNew() {
+    clearInterval(mxTimer);
+    mxReady = new Set();
+    while (mxReady.size < 3) mxReady.add(Math.floor(Math.random() * 64));
+    mxCells.forEach((c, i) => { c.classList.toggle('ready', mxReady.has(i)); c.classList.remove('scan'); });
+    $('mxChecked').textContent = 0; $('mxReady').textContent = 0;
+  }
+  $('mxNew').addEventListener('click', mxNew);
+  $('mxSelect').addEventListener('click', () => {
+    clearInterval(mxTimer);
+    let i = 0;
+    mxCells.forEach((c) => c.classList.remove('scan'));
+    mxTimer = setInterval(() => {
+      if (i > 0) mxCells[i - 1].classList.remove('scan');
+      if (i >= 64) { clearInterval(mxTimer); $('mxReady').textContent = mxReady.size; return; }
+      mxCells[i].classList.add('scan');
+      $('mxChecked').textContent = ++i;
+    }, 25);
+  });
+  $('mxEpoll').addEventListener('click', () => {
+    clearInterval(mxTimer);
+    mxCells.forEach((c) => c.classList.remove('scan'));
+    $('mxChecked').textContent = mxReady.size;
+    $('mxReady').textContent = mxReady.size;
+  });
+  mxNew();
+  function mxBars() {
+    const N = 10 ** +$('mxN').value, k = Math.max(1, Math.min(+$('mxK').value || 1, N));
+    $('mxNv').textContent = N.toLocaleString();
+    const b = $('mxBars');
+    b.innerHTML = '';
+    const max = Math.log10(N) + 1;
+    [['select / poll', N], ['epoll', k]].forEach(([name, v]) => b.append(h('span', null, name),
+      h('div', null, h('div', { class: 'fill', style: `width:${Math.max(2, ((Math.log10(v) + 1) / max) * 100)}%` })), h('b', { class: 'mono' }, v.toLocaleString() + ' checks')));
+    $('mxNote').textContent = `Bars are log scale. Per 1,000 calls: ${(N * 1000).toLocaleString()} fd checks vs ${(k * 1000).toLocaleString()}.` + (N > 1024 ? ' select() can\'t even do this: FD_SETSIZE is 1024.' : '');
+  }
+  $('mxN').addEventListener('input', mxBars);
+  $('mxK').addEventListener('input', mxBars);
+  mxBars();
+
+  /* ---------- 7.9 io_uring ---------- */
+  let ur;
+  function urReset() { ur = { sq: [], sqHead: 0, cq: [], cqHead: 0, ops: 0, sys: 0, classic: 0 }; urDraw(); }
+  function ringDraw(el, arr, head, label) {
+    el.innerHTML = '';
+    const tail = arr.length;
+    for (let s = 0; s < 8; s++) {
+      // slot s holds the most recent entry whose index % 8 == s
+      let entry = null, eIdx = -1;
+      for (let j = arr.length - 1; j >= 0 && j >= arr.length - 8; j--) if (j % 8 === s) { entry = arr[j]; eIdx = j; break; }
+      const pending = entry && eIdx >= head;
+      const slot = h('div', { class: 'slot' + (pending ? (label === 'cq' ? ' done' : ' full') : '') }, pending ? entry : '');
+      const ptrs = [];
+      if (head % 8 === s) ptrs.push('head');
+      if (tail % 8 === s) ptrs.push('tail');
+      if (ptrs.length) slot.append(h('span', { class: 'ptr' }, ptrs.join('/')));
+      el.append(slot);
+    }
+  }
+  function urDraw() {
+    ringDraw($('urSq'), ur.sq, ur.sqHead, 'sq');
+    ringDraw($('urCq'), ur.cq, ur.cqHead, 'cq');
+    $('urOps').textContent = ur.ops; $('urSys').textContent = ur.sys; $('urClassic').textContent = ur.classic;
+  }
+  function urConsume() {
+    const batch = ur.sq.slice(ur.sqHead);
+    ur.sqHead = ur.sq.length;
+    batch.forEach((op) => { ur.cq.push(op.startsWith('read') ? 'res 4096' : op.startsWith('write') ? 'res 512' : 'fd 7'); ur.ops++; ur.classic++; });
+    return batch.length;
+  }
+  document.querySelectorAll('[data-ur]').forEach((b) => b.addEventListener('click', () => {
+    if (ur.sq.length - ur.sqHead >= 8) return;
+    ur.sq.push(b.dataset.ur);
+    if ($('urPoll').checked) urConsume();
+    urDraw();
+  }));
+  $('urEnter').addEventListener('click', () => { if (ur.sq.length === ur.sqHead) return; ur.sys++; urConsume(); urDraw(); });
+  $('urReap').addEventListener('click', () => { ur.cqHead = ur.cq.length; urDraw(); });
+  $('urReset').addEventListener('click', urReset);
+  urReset();
+
+  /* ---------- 7.10 /proc /sys ---------- */
+  const PF = [
+    ['/proc/self/status', 'Name:   cat\nState:  R (running)\nPid:    8123\nPPid:   8001\nVmRSS:  2304 kB\nThreads:        1', 'Built on the spot from the reader\'s task_struct. /proc/self is a symlink to the reading process\'s own directory.'],
+    ['/proc/self/fd/', '0 -> /dev/pts/0\n1 -> /dev/pts/0\n2 -> /dev/pts/0\n3 -> /proc/4321/fd', 'One symlink per open fd: the fd table made visible (7.1). You can even copy a deleted-but-open file from here.'],
+    ['/proc/self/maps', '55d0c1a02000-55d0c1a07000 r-xp ... /usr/bin/cat\n55d0c2f4e000-55d0c2f6f000 rw-p ... [heap]\n7ffd5b8e7000-7ffd5b908000 rw-p ... [stack]', 'The VMA list of the process (6.4).'],
+    ['/proc/meminfo', 'MemTotal:  16302012 kB\nMemFree:    1203320 kB\nCached:     9512200 kB\nDirty:         2048 kB', 'Memory statistics (6.1, 6.7).'],
+    ['/proc/loadavg', '3.12 2.80 1.95 2/1153 31337', 'Load average: runnable + uninterruptible tasks (3.6).'],
+    ['/proc/sys/vm/swappiness', '60', 'Tunable: what sysctl vm.swappiness reads. echo 10 | sudo tee … changes it.'],
+    ['/sys/class/net/eth0/address', '52:54:00:12:34:56', 'sysfs: one value per file, from the kernel device model.'],
+    ['/sys/block/nvme0n1/queue/scheduler', '[none] mq-deadline kyber bfq', 'The I/O scheduler for this disk (7.15).'],
+    ['/sys/fs/cgroup/', 'cgroup.controllers  cgroup.procs  cpu.max  memory.max  ...', 'The cgroup v2 hierarchy (10.2).'],
+  ];
+  let pfSel = 0;
+  function pfDraw() {
+    const t = $('pfTree');
+    t.innerHTML = '';
+    PF.forEach(([p], i) => t.append(h('div', null, h('span', { class: 'node' + (i === pfSel ? ' sel' : ''), role: 'button', tabindex: '0', onclick: () => { pfSel = i; pfDraw(); } }, p))));
+    $('pfPath').textContent = '$ cat ' + PF[pfSel][0] + '   (ls -l shows size 0)';
+    $('pfOut').textContent = PF[pfSel][1];
+    $('pfWhy').textContent = PF[pfSel][2];
+  }
+  pfDraw();
+
+  /* ---------- 7.11 permissions ---------- */
+  function modeEditor(container, initial, onChange) {
+    let mode = initial;
+    const set = (m) => { mode = m; draw(); onChange(mode); };
+    function lsString(m, type) {
+      const r = (b, c) => (m & b ? c : '-');
+      let s = type;
+      s += r(0o400, 'r') + r(0o200, 'w') + (m & 0o4000 ? (m & 0o100 ? 's' : 'S') : r(0o100, 'x'));
+      s += r(0o40, 'r') + r(0o20, 'w') + (m & 0o2000 ? (m & 0o10 ? 's' : 'S') : r(0o10, 'x'));
+      s += r(0o4, 'r') + r(0o2, 'w') + (m & 0o1000 ? (m & 0o1 ? 't' : 'T') : r(0o1, 'x'));
+      return s;
+    }
+    function draw() {
+      container.innerHTML = '';
+      const g = h('div', { class: 'perm' }, h('span'), h('span', { class: 'hdr' }, 'r'), h('span', { class: 'hdr' }, 'w'), h('span', { class: 'hdr' }, 'x'));
+      [['owner', 6], ['group', 3], ['other', 0]].forEach(([who, sh]) => {
+        g.append(h('span', { class: 'hint' }, who));
+        [4, 2, 1].forEach((bit) => {
+          const cb = h('input', { type: 'checkbox', 'aria-label': `${who} ${bit === 4 ? 'read' : bit === 2 ? 'write' : 'execute'}` });
+          cb.checked = !!(mode & (bit << sh));
+          cb.addEventListener('change', () => set(mode ^ (bit << sh)));
+          g.append(h('label', null, cb));
+        });
+      });
+      const sp = h('div', { class: 'row', style: 'gap:10px; margin-top:6px' });
+      [['setuid', 0o4000], ['setgid', 0o2000], ['sticky', 0o1000]].forEach(([nm, bit]) => {
+        const cb = h('input', { type: 'checkbox' });
+        cb.checked = !!(mode & bit);
+        cb.addEventListener('change', () => set(mode ^ bit));
+        sp.append(h('label', { class: 'inline' }, cb, nm));
+      });
+      const oct = h('input', { type: 'text', class: 'mono', size: '5', value: mode.toString(8).padStart(4, '0'), 'aria-label': 'octal mode' });
+      oct.addEventListener('change', () => { if (/^[0-7]{3,4}$/.test(oct.value)) set(parseInt(oct.value, 8)); else oct.value = mode.toString(8).padStart(4, '0'); });
+      container.append(g, sp, h('div', { class: 'row', style: 'margin-top:8px' }, h('label', { class: 'inline' }, 'octal', oct), h('span', { class: 'big', style: 'font-size:18px' }, lsString(mode, container.dataset.type || '-'))));
+    }
+    draw();
+    return { get: () => mode, set };
+  }
+  const DIRS = { home: { owner: 'berat', group: 'staff', mode: 0o755 }, tmp: { owner: 'root', group: 'root', mode: 0o1777 }, shared: { owner: 'root', group: 'staff', mode: 0o2775 } };
+  const USERS = [['berat', 'owner of the file, in group staff'], ['alice', 'in group staff'], ['bob', 'other'], ['root', 'uid 0']];
+  const GROUPS = { berat: ['staff'], alice: ['staff'], bob: [], root: ['root'] };
+  $('pmDir').dataset.type = 'd';
+  let dirInfo = { ...DIRS.home };
+  const fileEd = modeEditor($('pmFile'), 0o640, whoDraw);
+  const dirEd = modeEditor($('pmDir'), dirInfo.mode, (m) => { dirInfo.mode = m; whoDraw(); });
+  $('pmDirPreset').addEventListener('change', () => { dirInfo = { ...DIRS[$('pmDirPreset').value] }; dirEd.set(dirInfo.mode); });
+  function classBits(user, owner, group, mode) {
+    if (user === owner) return { cls: 'owner', bits: (mode >> 6) & 7 };
+    if (GROUPS[user].includes(group)) return { cls: 'group', bits: (mode >> 3) & 7 };
+    return { cls: 'other', bits: mode & 7 };
+  }
+  function whoDraw() {
+    const fm = fileEd ? fileEd.get() : 0o640;
+    const t = $('pmWho');
+    t.innerHTML = '';
+    t.append(h('tr', null, ...['user', 'class used', 'read file', 'write file', 'execute file', 'delete file (dir rules)'].map((x) => h('th', null, x))));
+    const yes = (ok, why) => h('td', { class: ok ? 'ok' : 'bad', title: why || '' }, ok ? '✓' : '✗');
+    USERS.forEach(([u, desc]) => {
+      const root = u === 'root';
+      const fc = classBits(u, 'berat', 'staff', fm);
+      const dc = classBits(u, dirInfo.owner, dirInfo.group, dirInfo.mode);
+      const anyX = !!(fm & 0o111);
+      const r = root || !!(fc.bits & 4), w = root || !!(fc.bits & 2), x = root ? anyX : !!(fc.bits & 1);
+      let del = root || ((dc.bits & 2) && (dc.bits & 1));
+      let delWhy = '';
+      if (!root && del && (dirInfo.mode & 0o1000) && u !== 'berat' && u !== dirInfo.owner) { del = false; delWhy = 'sticky'; }
+      t.append(h('tr', null, h('td', { class: 'l' }, h('b', null, u), ' ', h('span', { class: 'hint' }, desc)),
+        h('td', null, root ? 'root bypass' : fc.cls), yes(r), yes(w), yes(x, root && !anyX ? 'root still needs an x bit' : ''),
+        h('td', { class: del ? 'ok' : 'bad' }, del ? '✓' : delWhy === 'sticky' ? '✗ sticky bit' : `✗ needs w+x on dir (${dc.cls})`)));
+    });
+  }
+  whoDraw();
+
+  /* ---------- 7.12 devices ---------- */
+  const DEV = [
+    ['/dev/sda', 'b', 8, 0, 'disk', 'SCSI/SATA disk driver (major 8), whole disk (minor 0). Block device: random access in blocks through the block layer and page cache.'],
+    ['/dev/sda1', 'b', 8, 1, 'disk', 'Same driver, minor 1 = first partition.'],
+    ['/dev/nvme0n1', 'b', 259, 0, 'disk', 'NVMe namespace; major 259 is the extended block major.'],
+    ['/dev/null', 'c', 1, 3, 'root', 'Memory devices driver (major 1). Writes always succeed and vanish; reads return EOF.'],
+    ['/dev/urandom', 'c', 1, 9, 'root', 'Same driver, minor 9: the kernel\'s random number generator.'],
+    ['/dev/tty1', 'c', 4, 1, 'tty', 'TTY driver (major 4), virtual console 1.'],
+    ['/dev/pts/0', 'c', 136, 0, 'tty', 'Pseudo-terminal slave: your terminal emulator or SSH session.'],
+  ];
+  let dvSel = 0;
+  function dvDraw() {
+    const t = $('dvTable');
+    t.innerHTML = '';
+    t.append(h('tr', null, ...['ls -l', 'type', 'major (driver)', 'minor (instance)', 'group'].map((x) => h('th', null, x))));
+    DEV.forEach(([p, ty, ma, mi, g], i) => {
+      const tr = h('tr', { class: 'click' + (i === dvSel ? ' sel' : '') }, h('td', { class: 'l' }, `${ty}rw-rw---- ${p}`), h('td', null, ty === 'b' ? 'block' : 'char'), h('td', null, String(ma)), h('td', null, String(mi)), h('td', null, g));
+      tr.addEventListener('click', () => { dvSel = i; dvDraw(); });
+      t.append(tr);
+    });
+    $('dvOut').textContent = DEV[dvSel][5] + ' The inode stores no data blocks: open() routes every read/write/ioctl to the driver registered for the major number.';
+  }
+  dvDraw();
+  const UD = [
+    ['You plug in the USB stick. The USB driver detects it; the SCSI disk driver registers a new disk.', ''],
+    ['devtmpfs: the kernel itself creates the node /dev/sdb (and /dev/sdb1) as soon as the driver registers it.', 'sdb'],
+    ['The kernel sends a uevent (ACTION=add, DEVNAME=/dev/sdb, MODALIAS=…) over a netlink socket to udevd.', 'sdb'],
+    ['udevd reads all attributes from the uevent and /sys (serial number, filesystem type, UUID).', 'sdb'],
+    ['udevd matches rules in /lib/udev/rules.d and /etc/udev/rules.d: loads any missing module (modprobe by MODALIAS), sets owner/group/permissions.', 'sdb'],
+    ['udevd creates stable symlinks such as /dev/disk/by-uuid/… and /dev/disk/by-id/…, then notifies other programs (desktop automounter).', 'links'],
+  ];
+  let udStep = 0;
+  function udDraw() {
+    const ol = $('udSteps');
+    ol.innerHTML = '';
+    UD.forEach(([t], i) => ol.append(h('li', { class: i < udStep ? 'done' : i === udStep ? 'now' : '', style: i > udStep ? 'opacity:.4' : '' }, `${i + 1}. ${t}`)));
+    const st = UD[udStep][1];
+    let dev = 'sda\nsda1\nnvme0n1\nnull\ntty1';
+    if (st) dev += '\nsdb       ← new\nsdb1      ← new';
+    if (st === 'links') dev += '\ndisk/by-uuid/9C3A-11F2 → ../../sdb1\ndisk/by-id/usb-SanDisk_Ultra… → ../../sdb';
+    $('udDev').textContent = dev;
+    $('udNext').disabled = udStep >= UD.length - 1;
+  }
+  $('udNext').addEventListener('click', () => { udStep++; udDraw(); });
+  $('udReset').addEventListener('click', () => { udStep = 0; udDraw(); });
+  udDraw();
+
+  /* ---------- 7.13 mounts ---------- */
+  let mt;
+  function mtReset() { mt = { usb: false, bind: false, link: false, view: 'host' }; mtDraw(); }
+  function mtDraw() {
+    $('mtHost').classList.toggle('primary', mt.view === 'host');
+    $('mtCtr').classList.toggle('primary', mt.view === 'ctr');
+    $('mtUsb').textContent = mt.usb ? 'umount /mnt/usb' : 'mount /dev/sdc1 /mnt/usb';
+    let tree = '/                    ext4 on nvme0n1p2 (root inode 2)\n';
+    tree += '├── data/projects/a.txt          inode 1311\n';
+    tree += mt.usb ? '├── mnt/usb/       ← vfat on sdc1 (its root)\n│   └── photo.jpg\n' : '├── mnt/usb/       (empty dir; old contents would be hidden by a mount)\n';
+    tree += '└── srv/ctr/       the container\'s root\n';
+    tree += mt.bind ? '    ├── projects/  ← bind mount of /data/projects\n    │   └── a.txt               inode 1311 (same file)\n' : '    ├── projects/  (empty dir)\n';
+    tree += mt.link ? '    └── proj-link → "/data/projects"   (symlink: a path string)\n' : '';
+    $('mtTree').textContent = tree;
+    const rows = [];
+    if (mt.view === 'host') {
+      rows.push(['/mnt/usb/photo.jpg', mt.usb ? '✓ vfat on sdc1' : '✗ ENOENT (not mounted)', mt.usb]);
+      rows.push(['/srv/ctr/projects/a.txt', mt.bind ? '✓ inode 1311 via bind mount' : '✗ ENOENT', mt.bind]);
+      rows.push(['/srv/ctr/proj-link/a.txt', mt.link ? '✓ follows "/data/projects" from the host root' : '✗ no such link', mt.link]);
+    } else {
+      rows.push(['/projects/a.txt', mt.bind ? '✓ inode 1311: the bind mount is part of the container\'s mount tree' : '✗ ENOENT', mt.bind]);
+      rows.push(['/proj-link/a.txt', mt.link ? '✗ "/data/projects" is resolved against the CONTAINER root = /srv/ctr/data/projects → ENOENT' : '✗ no such link', false]);
+      rows.push(['/mnt/usb/photo.jpg', '✗ not visible: outside the container\'s root', false]);
+    }
+    const t = $('mtRes');
+    t.innerHTML = '';
+    t.append(h('tr', null, h('th', null, mt.view === 'host' ? 'path (host)' : 'path (inside container)'), h('th', null, 'result')));
+    rows.forEach(([p, r, ok]) => t.append(h('tr', null, h('td', { class: 'l' }, p), h('td', { class: 'l ' + (ok ? 'ok' : 'bad'), style: 'font-family: inherit; font-size:13px' }, r))));
+  }
+  $('mtUsb').addEventListener('click', () => { mt.usb = !mt.usb; mtDraw(); });
+  $('mtBind').addEventListener('click', () => { mt.bind = true; mtDraw(); });
+  $('mtLink').addEventListener('click', () => { mt.link = true; mtDraw(); });
+  $('mtHost').addEventListener('click', () => { mt.view = 'host'; mtDraw(); });
+  $('mtCtr').addEventListener('click', () => { mt.view = 'ctr'; mtDraw(); });
+  $('mtReset').addEventListener('click', mtReset);
+  mtReset();
+
+  /* ---------- 7.14 FHS ---------- */
+  const FH = [
+    ['/', 0, 'The single root of the tree. Everything else hangs below it, including other filesystems through mounts.'],
+    ['bin → usr/bin', 1, 'Ready-to-run programs everyone needs: ls, cp, grep, ps, ping.'],
+    ['sbin → usr/sbin', 1, 'System administration programs: fdisk, iptables, reboot, ip, swapon.'],
+    ['lib → usr/lib', 1, 'Shared libraries for /bin and /sbin (libc.so.6, ld-linux) and kernel modules in /lib/modules/$(uname -r).'],
+    ['boot', 1, 'Kernel (vmlinuz), initramfs and GRUB configuration.'],
+    ['dev', 1, 'Device files, on devtmpfs.'],
+    ['etc', 1, 'System-wide configuration: passwd, shadow, group, fstab, hosts, resolv.conf, ssh/sshd_config, systemd units.'],
+    ['home', 1, 'Personal directories of regular users.'],
+    ['root', 1, 'root\'s home directory.'],
+    ['proc', 1, 'Process and kernel information (procfs, virtual).'],
+    ['sys', 1, 'Device model and kernel tunables (sysfs, virtual).'],
+    ['run', 1, 'Runtime data since this boot (tmpfs): PID files, sockets like /run/docker.sock.'],
+    ['tmp', 1, 'Temporary files, cleaned at boot, often tmpfs. World-writable with the sticky bit (drwxrwxrwt).'],
+    ['usr', 1, 'Second-level hierarchy with the bulk of installed software. With the usr merge, /bin, /sbin and /lib are symlinks into it.'],
+    ['usr/share', 2, 'Architecture-independent data: man pages, docs.'],
+    ['usr/local', 2, 'Software installed locally by the admin.'],
+    ['var', 1, 'Data that changes over time.'],
+    ['var/log', 2, 'Log files.'],
+    ['var/lib', 2, 'Persistent program state: databases, package manager data.'],
+    ['var/cache', 2, 'Caches that can be regenerated.'],
+    ['opt', 1, 'Add-on, self-contained third-party packages.'],
+    ['mnt, media', 1, 'Mount points for temporary and removable media.'],
+    ['srv', 1, 'Data served by this system (web, ftp).'],
+  ];
+  let fhSel = 6;
+  function fhDraw() {
+    const t = $('fhTree');
+    t.innerHTML = '';
+    FH.forEach(([n, d], i) => t.append(h('div', { style: `padding-left:${d * 18}px` }, h('span', { class: 'node' + (i === fhSel ? ' sel' : ''), role: 'button', tabindex: '0', onclick: () => { fhSel = i; fhDraw(); } }, (d ? '└─ ' : '') + n))));
+    $('fhName').textContent = '/' + FH[fhSel][0].replace(/^\//, '');
+    $('fhOut').textContent = FH[fhSel][2];
+  }
+  fhDraw();
+
+  /* ---------- 7.15 storage ---------- */
+  const SS = ['write(): copy into a page-cache page, mark it dirty, return (fast)', 'fsync(): the filesystem (ext4) allocates blocks and journals the metadata', 'block layer: build a bio → merge into a request → blk-mq per-CPU queue → I/O scheduler', 'device driver (nvme): put the command in a hardware queue', 'device: DMA the data from RAM into its volatile write cache', 'FLUSH / FUA: the drive commits its cache to flash; completion interrupt → fsync returns'];
+  const ssEls = SS.map((t) => { const e = h('div', { class: 'layer' }, t); $('ssLayers').append(e); return e; });
+  let ssTimer = null;
+  $('ssGo').addEventListener('click', () => {
+    clearInterval(ssTimer);
+    let i = 0;
+    ssEls.forEach((e) => e.classList.remove('on'));
+    ssTimer = setInterval(() => { if (i >= ssEls.length) { clearInterval(ssTimer); return; } ssEls[i++].classList.add('on'); }, 450);
+  });
+
+  let skReqs = [], skTimer = null;
+  function skNew() {
+    clearInterval(skTimer);
+    skReqs = Array.from({ length: 7 }, () => 5 + Math.floor(Math.random() * 91));
+    skDraw(50);
+    $('skDist').textContent = 0; $('skOrder').textContent = 'head starts at 50';
+  }
+  function skDraw(head, done) {
+    const b = $('skBar');
+    b.innerHTML = '';
+    skReqs.forEach((p, i) => b.append(h('div', { class: 'req', style: `left:${p}%; ${done && done.has(i) ? 'opacity:.3' : ''}` }, String(i + 1))));
+    b.append(h('div', { class: 'head', style: `left:${head}%` }));
+  }
+  function skRun(sorted) {
+    clearInterval(skTimer);
+    let order = skReqs.map((p, i) => i);
+    if (sorted) { const up = order.filter((i) => skReqs[i] >= 50).sort((a, b) => skReqs[a] - skReqs[b]); const down = order.filter((i) => skReqs[i] < 50).sort((a, b) => skReqs[b] - skReqs[a]); order = up.concat(down); }
+    let head = 50, dist = 0, k = 0;
+    const done = new Set();
+    skDraw(head, done);
+    $('skOrder').textContent = 'order: ' + order.map((i) => i + 1).join(' → ');
+    skTimer = setInterval(() => {
+      if (k >= order.length) { clearInterval(skTimer); return; }
+      const i = order[k++];
+      dist += Math.abs(skReqs[i] - head);
+      head = skReqs[i];
+      done.add(i);
+      skDraw(head, done);
+      $('skDist').textContent = dist + ' tracks';
+    }, 420);
+  }
+  $('skNew').addEventListener('click', skNew);
+  $('skFifo').addEventListener('click', () => skRun(false));
+  $('skSort').addEventListener('click', () => skRun(true));
+  skNew();
+
+  const JN = {
+    no: { steps: ['mark inode 77 used in the inode bitmap', 'write inode 77 (mode, size, block list)', 'add "notes.txt → 77" to the directory block', 'mark data block used in the block bitmap and write the data'],
+          crash: ['Nothing written: consistent, file just doesn\'t exist.', 'Inode marked used but never written: leaked inode. Inconsistent → long fsck.', 'Inode exists but no directory entry points to it: orphan. Inconsistent → fsck.', 'Entry points to an inode whose block isn\'t marked used: a later file could get the same block. Inconsistent → fsck.', 'All steps done: consistent.'] },
+    yes: { steps: ['write the planned metadata changes to the JOURNAL', 'write the COMMIT record: the transaction now "happened"', 'checkpoint: write the changes to their real locations', 'mark the journal space free'],
+           crash: ['Nothing written: consistent.', 'Journal has an incomplete transaction (no commit) → ignored on mount: as if nothing happened. Consistent.', 'Committed → on mount the journal is REPLAYED → file exists. Consistent, seconds instead of hours.', 'Committed → replay (writing the same blocks again is harmless). Consistent.', 'All steps done: consistent.'] },
+  };
+  let jnMode = 'yes', jnStep = 0;
+  function jnDraw(crashed) {
+    $('jnNo').classList.toggle('primary', jnMode === 'no');
+    $('jnYes').classList.toggle('primary', jnMode === 'yes');
+    const j = JN[jnMode];
+    const ol = $('jnSteps');
+    ol.innerHTML = '';
+    j.steps.forEach((s, i) => ol.append(h('li', { class: i < jnStep ? 'done' : i === jnStep && !crashed ? 'now' : '', style: i >= jnStep ? 'opacity:.5' : '' }, `${i < jnStep ? '✓' : '·'} ${i + 1}. ${s}`)));
+    const out = $('jnOut');
+    if (crashed) { const msg = j.crash[jnStep]; out.textContent = '💥 After reboot: ' + msg; out.className = /Inconsistent/.test(msg) ? 'bad' : 'ok'; }
+    else { out.textContent = jnStep >= j.steps.length ? 'Done. ' + j.crash[jnStep] : ''; out.className = 'ok'; }
+    $('jnNext').disabled = crashed || jnStep >= j.steps.length;
+    $('jnCrash').disabled = crashed;
+  }
+  $('jnNo').addEventListener('click', () => { jnMode = 'no'; jnStep = 0; jnDraw(); });
+  $('jnYes').addEventListener('click', () => { jnMode = 'yes'; jnStep = 0; jnDraw(); });
+  $('jnNext').addEventListener('click', () => { jnStep++; jnDraw(); });
+  $('jnCrash').addEventListener('click', () => jnDraw(true));
+  $('jnReset').addEventListener('click', () => { jnStep = 0; jnDraw(); });
+  jnDraw();
+
+  const SU = {
+    safe: { steps: ['open("config.json.tmp", O_CREAT|O_TRUNC)', 'write(tmp, new data)', 'fsync(tmp)', 'close(tmp)', 'rename("config.json.tmp", "config.json")', 'fsync(directory)'],
+            res: ['old config.json (intact)', 'old config.json (the half-written temp file is ignored)', 'old config.json (temp is durable, not yet swapped in)', 'old config.json', 'old config.json', 'old OR new config.json, never a mix (the rename may not be durable yet)', 'new config.json, guaranteed'] },
+    nofsync: { steps: ['open("config.json.tmp", O_CREAT|O_TRUNC)', 'write(tmp, new data)', 'close(tmp)', 'rename("config.json.tmp", "config.json")', 'fsync(directory)'],
+               res: ['old config.json', 'old config.json', 'old config.json', 'old, new, or an EMPTY config.json: the rename can reach disk before the data', 'new or EMPTY config.json: the rename is durable, the data may not be'] },
+    inplace: { steps: ['open("config.json", O_TRUNC)', 'write(fd, first half)', 'write(fd, second half)', 'fsync(fd)'],
+               res: ['old config.json', 'EMPTY config.json: O_TRUNC already threw the old content away', 'HALF-WRITTEN config.json', 'old, empty, half or full: nothing forced it to disk yet', 'new config.json'] },
+  };
+  let suStep = 0;
+  function suDraw(crashed) {
+    const s = SU[$('suMode').value];
+    const ol = $('suSteps');
+    ol.innerHTML = '';
+    s.steps.forEach((t, i) => ol.append(h('li', { class: i < suStep ? 'done' : i === suStep && !crashed ? 'now' : '', style: i >= suStep ? 'opacity:.5' : '' }, `${i < suStep ? '✓' : '·'} ${t}`)));
+    const out = $('suOut');
+    if (crashed) { const r = s.res[suStep]; out.textContent = '💥 After reboot you find: ' + r; out.className = /EMPTY|HALF|half/.test(r) ? 'bad' : /OR|or/.test(r) ? 'warn' : 'ok'; }
+    else { out.textContent = suStep >= s.steps.length ? 'Done: ' + s.res[suStep] : ''; out.className = 'ok'; }
+    $('suNext').disabled = crashed || suStep >= s.steps.length;
+    $('suCrash').disabled = crashed;
+  }
+  $('suNext').addEventListener('click', () => { suStep++; suDraw(); });
+  $('suCrash').addEventListener('click', () => suDraw(true));
+  $('suReset').addEventListener('click', () => { suStep = 0; suDraw(); });
+  $('suMode').addEventListener('change', () => { suStep = 0; suDraw(); });
+  suDraw();
+})();
+</script>
+</body>
+</html>

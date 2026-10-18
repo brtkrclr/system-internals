@@ -13,3 +13,4 @@ kramdown:
 exclude:
   - README.md
   - .backup
+  - tools     # build scripts for the PDF and local preview

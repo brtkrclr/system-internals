@@ -1,0 +1,886 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Processes, Visualized</title>
+<meta name="description" content="Interactive visuals for Part 4 of System Internals: processes, task_struct, address space and ASLR, the process tree, states, fork and copy-on-write, execve, exit codes, and ELF.">
+<script>
+  (function () {
+    var saved = null;
+    try { saved = localStorage.getItem('theme'); } catch (e) {}
+    var dark = saved ? saved === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches;
+    document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+  })();
+</script>
+<style>
+  :root {
+    --bg: #ffffff; --surface: #f6f8fa; --surface-2: #eaeef2; --text: #1f2328; --muted: #59636e;
+    --border: #d0d7de; --accent: #0969da; --accent-soft: #ddf4ff;
+    --c-blue: #0969da; --c-pink: #bf3989; --c-green: #1a7f37; --c-amber: #9a6700; --c-purple: #8250df; --c-red: #cf222e;
+    --c-blue-soft: #ddf4ff; --c-pink-soft: #ffeff7; --c-green-soft: #dafbe1; --c-amber-soft: #fff8c5; --c-purple-soft: #fbefff; --c-red-soft: #ffebe9;
+    --hatch: repeating-linear-gradient(45deg, transparent 0 4px, rgba(130,80,223,.22) 4px 7px);
+    --radius: 8px;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  html[data-theme="dark"] {
+    --bg: #0d1117; --surface: #151b23; --surface-2: #212830; --text: #e6edf3; --muted: #9198a1;
+    --border: #3d444d; --accent: #4493f8; --accent-soft: rgba(56,139,253,.15);
+    --c-blue: #4493f8; --c-pink: #f778ba; --c-green: #3fb950; --c-amber: #d29922; --c-purple: #ab7df8; --c-red: #f85149;
+    --c-blue-soft: rgba(56,139,253,.18); --c-pink-soft: rgba(247,120,186,.16); --c-green-soft: rgba(63,185,80,.16);
+    --c-amber-soft: rgba(210,153,34,.18); --c-purple-soft: rgba(171,125,248,.18); --c-red-soft: rgba(248,81,73,.16);
+    --hatch: repeating-linear-gradient(45deg, transparent 0 4px, rgba(171,125,248,.30) 4px 7px);
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif; }
+  a { color: var(--accent); }
+  code, .mono { font-family: var(--mono); font-size: .92em; }
+  code { background: var(--surface-2); padding: .1em .35em; border-radius: 4px; }
+  header.top { max-width: 1040px; margin: 0 auto; padding: 32px 16px 8px; }
+  header.top h1 { margin: 0 0 6px; font-size: clamp(28px, 5vw, 40px); line-height: 1.15; }
+  header.top p { margin: 0 0 8px; color: var(--muted); max-width: 70ch; }
+  .backlink { font-size: 14px; }
+  nav.chips { position: sticky; top: 0; z-index: 10; background: var(--bg); border-bottom: 1px solid var(--border); }
+  nav.chips .inner { max-width: 1040px; margin: 0 auto; padding: 8px 16px; display: flex; gap: 6px; overflow-x: auto; scrollbar-width: thin; }
+  nav.chips a { flex: none; font-size: 13px; padding: 4px 10px; border: 1px solid var(--border); border-radius: 999px;
+                color: var(--text); text-decoration: none; background: var(--surface); white-space: nowrap; }
+  nav.chips a:hover, nav.chips a.active { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+  main { max-width: 1040px; margin: 0 auto; padding: 8px 16px 32px; }
+  section.card { border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin: 24px 0; background: var(--bg); scroll-margin-top: 56px; }
+  section.card > h2 { margin: 0 0 4px; font-size: 22px; }
+  section.card > h2 .num { color: var(--muted); font-weight: 500; margin-right: 6px; }
+  .lead { color: var(--muted); margin: 0 0 16px; max-width: 75ch; }
+  .demo { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; margin: 12px 0; overflow-x: auto; }
+  .demo h3 { margin: 0 0 10px; font-size: 15px; }
+  .row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+  .stack { display: flex; flex-direction: column; gap: 10px; }
+  .connect { font-size: 14px; color: var(--muted); border-left: 3px solid var(--accent); padding: 4px 0 4px 10px; margin-top: 14px; }
+  .hint { font-size: 13px; color: var(--muted); }
+  .big { font-family: var(--mono); font-size: 20px; font-weight: 600; }
+  .stat { display: inline-flex; flex-direction: column; padding: 6px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg); min-width: 90px; }
+  .stat .k { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  .stat .v { font-family: var(--mono); font-size: 18px; font-weight: 600; }
+  .ok { color: var(--c-green); } .bad { color: var(--c-red); } .warn { color: var(--c-amber); }
+  button, select, input[type="text"], input[type="number"] {
+    font: inherit; font-size: 14px; color: var(--text); background: var(--bg);
+    border: 1px solid var(--border); border-radius: 6px; padding: 5px 10px;
+  }
+  button { cursor: pointer; }
+  button:hover { background: var(--surface-2); }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover { filter: brightness(1.08); background: var(--accent); }
+  button:focus-visible, select:focus-visible, input:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  input[type="range"] { accent-color: var(--accent); width: min(300px, 100%); }
+  label.inline { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; }
+  .legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 13px; color: var(--muted); }
+  .legend span::before { content: ""; display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 5px; vertical-align: -2px; background: var(--sw); border: 1px solid var(--border); }
+  .bar { height: 28px; border-radius: 6px; display: flex; overflow: hidden; border: 1px solid var(--border); font-size: 12px; }
+  .bar > div { display: flex; align-items: center; justify-content: center; color: var(--text); white-space: nowrap; overflow: hidden; padding: 0 4px; }
+  table.mem { border-collapse: collapse; font-family: var(--mono); font-size: 13px; }
+  table.mem th, table.mem td { border: 1px solid var(--border); padding: 4px 10px; text-align: left; }
+  table.mem th { background: var(--surface-2); font-weight: 600; font-family: inherit; }
+  table.mem tr.hl td { background: var(--accent-soft); }
+  .theme-btn { position: fixed; top: 10px; right: 12px; z-index: 20; width: 34px; height: 34px; padding: 0; font-size: 16px; }
+  footer.pager { max-width: 1040px; margin: 0 auto; padding: 0 16px 48px; display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; font-size: 14px; }
+
+  /* boxes / diagrams */
+  .box { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; background: var(--bg); font-size: 13px; text-align: center; transition: background .15s, box-shadow .15s; }
+  .box.lit { background: var(--accent); color: #fff; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+  .ring3 { background: var(--c-green-soft); } .ring0 { background: var(--c-purple-soft); }
+  .zone { border: 1px dashed var(--border); border-radius: 10px; padding: 8px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; justify-content: center; }
+  .zone .tag { width: 100%; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); text-align: left; }
+  .kdiag { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+  @media (max-width: 720px) { .kdiag { grid-template-columns: 1fr; } }
+
+  /* stepper */
+  .stepper { display: grid; grid-template-columns: minmax(180px, 260px) 1fr; gap: 14px; }
+  @media (max-width: 680px) { .stepper { grid-template-columns: 1fr; } }
+  .stepper ol { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 4px; counter-reset: s; }
+  .stepper li button { width: 100%; text-align: left; border-radius: 6px; font-size: 13px; padding: 6px 8px; }
+  .stepper li button::before { counter-increment: s; content: counter(s) ". "; color: var(--muted); }
+  .stepper li button.cur { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); font-weight: 600; }
+  .stepper li button.done { color: var(--muted); }
+  .stepper .pane { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; min-height: 160px; }
+  .stepper .pane h4 { margin: 0 0 6px; font-size: 15px; }
+  .stepper .nav { display: flex; gap: 8px; margin-top: 10px; }
+
+  /* timeline lanes */
+  .lanes { display: grid; grid-template-columns: 110px 1fr; gap: 4px 8px; align-items: center; font-size: 12px; }
+  .lane { display: flex; height: 26px; border-bottom: 1px dashed var(--border); overflow: hidden; }
+  .seg { height: 22px; margin-top: 2px; border-radius: 4px; flex: none; display: flex; align-items: center; justify-content: center; font-size: 10px; color: #fff; overflow: hidden; white-space: nowrap; }
+  .seg.gap { background: transparent; }
+  .seg.user { background: var(--c-green); } .seg.kern { background: var(--c-purple); } .seg.userB { background: var(--c-blue); } .seg.irq { background: var(--c-red); } .seg.soft { background: var(--c-amber); }
+
+  /* scheduler */
+  .tasks { display: flex; flex-direction: column; gap: 6px; }
+  .task { display: grid; grid-template-columns: 70px 120px 1fr 120px; gap: 8px; align-items: center; font-size: 13px; }
+  .task .runbar { height: 14px; border-radius: 4px; background: var(--accent); }
+  .task.next .name { color: var(--accent); font-weight: 700; }
+  .ladder { display: flex; flex-direction: column; gap: 4px; max-width: 560px; }
+  .rung { display: grid; grid-template-columns: 26px 1fr auto; gap: 10px; align-items: center; border: 1px solid var(--border); border-radius: 8px; padding: 6px 10px; background: var(--bg); font-size: 13px; }
+  .rung.runs { border-color: var(--c-green); box-shadow: 0 0 0 2px var(--c-green-soft); }
+  .rung.blocked { opacity: .55; }
+  .cores { display: flex; gap: 8px; flex-wrap: wrap; }
+  .core { width: 80px; height: 54px; border: 1px solid var(--border); border-radius: 8px; display: flex; align-items: center; justify-content: center; font-size: 12px; background: var(--bg); }
+  .core.busy { background: var(--c-green-soft); border-color: var(--c-green); font-weight: 600; }
+  .dq { display: flex; gap: 6px; flex-wrap: wrap; }
+  .dtask { padding: 3px 8px; border-radius: 999px; background: var(--c-amber-soft); border: 1px solid var(--c-amber); font-size: 12px; }
+
+  /* mbr */
+  .mbr { display: flex; height: 44px; border: 1px solid var(--border); border-radius: 6px; overflow: hidden; font-size: 12px; max-width: 640px; }
+  .mbr > div { display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center; line-height: 1.2; overflow: hidden; }
+
+  .code { font: 13px/1.6 var(--mono); background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; }
+  .code .ln { display: flex; gap: 10px; }
+  .code .arrow { width: 70px; color: var(--accent); font-weight: 700; }
+  .clock { font: 600 22px var(--mono); }
+  @media (max-width: 600px) { section.card { padding: 14px; } .task { grid-template-columns: 60px 100px 1fr; } .task .share { display: none; } }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+  /* part 4 specifics */
+  .procs { display: flex; flex-wrap: wrap; gap: 10px; }
+  .proc { border: 1px solid var(--border); border-radius: 8px; background: var(--bg); padding: 8px 10px; font: 12px/1.5 var(--mono); min-width: 190px; }
+  .proc b { font-size: 13px; }
+  .fields4 { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 6px; }
+  .fields4 button { text-align: left; font-family: var(--mono); font-size: 13px; }
+  .fields4 button.sel { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+  .detail { background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-top: 10px; min-height: 4.5em; }
+  .aspace { display: flex; flex-direction: column; max-width: 620px; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; font-size: 13px; }
+  .aspace .r { display: grid; grid-template-columns: 170px 1fr; border-bottom: 1px solid var(--border); }
+  .aspace .r:last-child { border-bottom: 0; }
+  .aspace .a { font: 11px var(--mono); color: var(--muted); padding: 6px 8px; background: var(--surface-2); }
+  .aspace .z { padding: 6px 10px; transition: background .2s; }
+  .aspace .z.flash { box-shadow: inset 0 0 0 2px var(--accent); }
+  .tree ul { list-style: none; margin: 0; padding-left: 22px; border-left: 1px dashed var(--border); }
+  .tree > ul { padding-left: 0; border-left: 0; }
+  .tree li { margin: 4px 0; }
+  .tree button { font-family: var(--mono); font-size: 13px; padding: 3px 8px; }
+  .tree button.sel { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+  .tree button.zombie { border-style: dashed; color: var(--c-red); }
+  .tree button.sub { box-shadow: 0 0 0 2px var(--c-amber-soft); }
+  .log { font: 12px/1.6 var(--mono); background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; max-height: 150px; overflow: auto; }
+  .jobs { display: flex; flex-direction: column; gap: 8px; }
+  .job { border: 1px solid var(--border); border-radius: 8px; background: var(--bg); padding: 8px 10px; font-size: 13px; }
+  .job.fg { border-color: var(--c-green); box-shadow: 0 0 0 2px var(--c-green-soft); }
+  .pill { display: inline-block; font: 12px var(--mono); padding: 1px 8px; border-radius: 999px; border: 1px solid var(--border); margin: 2px 4px 2px 0; }
+  .pill.T { background: var(--c-amber-soft); } .pill.dead { text-decoration: line-through; opacity: .6; }
+  svg text { font-family: var(--mono); }
+  .check td:first-child { width: 28px; text-align: center; }
+  .elf { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; }
+  @media (max-width: 760px) { .elf { grid-template-columns: 1fr; } }
+  .elf .col { display: flex; flex-direction: column; gap: 4px; }
+  .elf .it { border: 1px solid var(--border); border-radius: 6px; padding: 5px 8px; font: 12px var(--mono); background: var(--bg); cursor: pointer; text-align: left; }
+  .elf .it.on { background: var(--accent-soft); border-color: var(--accent); }
+  .elf .it.seg1 { border-left: 4px solid var(--c-blue); } .elf .it.seg2 { border-left: 4px solid var(--c-green); } .elf .it.seg3 { border-left: 4px solid var(--c-amber); } .elf .it.none { border-left: 4px solid var(--border); }
+</style>
+</head>
+<body>
+<button class="theme-btn" id="themeBtn" type="button" aria-label="Toggle dark mode"></button>
+
+<header class="top">
+  <a class="backlink" href="../#4-processes">← Back to the notes: Part 4</a>
+  <h1>Processes, Visualized</h1>
+  <p>Spawn processes, poke at a <code>task_struct</code>, randomize an address space, grow a process tree, fork with copy-on-write, and step through <code>execve</code>.</p>
+</header>
+
+<nav class="chips" aria-label="Sections"><div class="inner" id="chips"></div></nav>
+
+<main>
+
+<!-- 4.1 -->
+<section class="card" id="s4-1" data-title="4.1 Program vs process">
+  <h2><span class="num">4.1</span>Program vs Process</h2>
+  <p class="lead">A program is a file on disk. A process is a running instance of it. Run the same file several times.</p>
+  <div class="demo">
+    <div class="row">
+      <div class="box" style="min-width:150px">📄 <code>/usr/bin/sleep</code><div class="hint">one ELF file, one inode</div></div>
+      <button type="button" class="primary" id="runProc">▶ run it</button>
+      <button type="button" id="killProc">kill the newest</button>
+    </div>
+    <div class="procs" id="procs" style="margin-top:12px"></div>
+    <p class="hint" style="margin:10px 0 0">Every process gets its own PID, address space (randomized by ASLR), fd table and state. The code pages of <code>sleep</code> and <code>libc</code> are shared through the page cache, so the program's code is in RAM only once.</p>
+  </div>
+  <div class="connect">Connection: the shared code pages come from the page cache (6.7) via file-backed mappings (6.6).</div>
+</section>
+
+<!-- 4.2 -->
+<section class="card" id="s4-2" data-title="4.2 task_struct">
+  <h2><span class="num">4.2</span><code>task_struct</code>: Click a Field</h2>
+  <p class="lead">Every process and every thread has its own <code>task_struct</code>. Almost every other topic is one of its fields and what that field points to.</p>
+  <div class="demo">
+    <div class="fields4" id="tsFields"></div>
+    <div class="detail" id="tsDetail"></div>
+  </div>
+  <div class="connect">Connection: <code>/proc/&lt;pid&gt;/status</code> is generated on the spot from this struct (7.10); <code>current</code> gives the one running on this CPU.</div>
+</section>
+
+<!-- 4.3 -->
+<section class="card" id="s4-3" data-title="4.3 Process image">
+  <h2><span class="num">4.3</span>Process Image: Memory + Execution Context</h2>
+  <p class="lead">The memory image stays in place while a process is paused. The CPU registers don't: they're saved into the kernel's record and restored later. Preempt the process and watch.</p>
+  <div class="demo">
+    <div class="row" style="align-items:flex-start; gap:20px">
+      <div class="stack" style="min-width:180px"><b>Memory image</b>
+        <div class="box ring3">.text (code)</div><div class="box ring3">.data / .bss</div><div class="box ring3">heap</div><div class="box ring3">stack</div>
+        <span class="hint">stays in RAM; reached via <code>mm_struct</code></span></div>
+      <div class="stack"><b>CPU registers <span id="cpuWho" class="hint"></span></b><table class="mem" id="cpuRegs"></table></div>
+      <div class="stack"><b>saved in task_struct → thread</b><table class="mem" id="savedRegs"></table></div>
+    </div>
+    <div class="row" style="margin-top:12px"><button type="button" id="preempt" class="primary">Preempt (context switch out)</button><button type="button" id="resume">Resume</button></div>
+    <p class="hint" style="margin:8px 0 0">Simplified: the user registers are actually saved on the task's kernel stack (<code>struct pt_regs</code>), and <code>task_struct->thread</code> keeps the kernel stack pointer and FPU state. Either way, they belong to this task until it runs again.</p>
+  </div>
+  <div class="connect">Connection: this save/restore is the context switch of 3.5; <code>task_struct</code> points to the image but does not contain it.</div>
+</section>
+
+<!-- 4.4 -->
+<section class="card" id="s4-4" data-title="4.4 Memory layout">
+  <h2><span class="num">4.4</span>Process Memory Layout and ASLR</h2>
+  <p class="lead">From high addresses (top) to low. Randomize the layout, grow the heap, make a big allocation, and recurse until the stack overflows.</p>
+  <div class="demo">
+    <div class="row">
+      <button type="button" id="aslr" class="primary">🎲 New process (ASLR)</button>
+      <button type="button" id="mSmall">malloc(64) ×1000</button>
+      <button type="button" id="mBig">malloc(1 MB)</button>
+      <button type="button" id="recurse">recurse deeper</button>
+    </div>
+    <div class="aspace" id="aspace" style="margin-top:12px"></div>
+    <p id="asMsg" style="margin:8px 0 0; font-weight:600; min-height:1.5em"></p>
+    <p class="hint" style="margin:0">Addresses are illustrative but follow the real shape: PIE binary near <code>0x55…</code>, libraries near <code>0x7f…</code>, stack near <code>0x7ffc…</code>, kernel in the upper half.</p>
+  </div>
+  <div class="connect">Connection: each row is a VMA (6.4); heap growth is <code>brk()</code>, big mallocs are <code>mmap()</code> (6.6); the stack overflow is a page fault outside any VMA → SIGSEGV (6.5).</div>
+</section>
+
+<!-- 4.5 -->
+<section class="card" id="s4-5" data-title="4.5 Identity & tree">
+  <h2><span class="num">4.5</span>Process Identity: the Process Tree</h2>
+  <p class="lead">Select a process, then fork, exit or wait. Watch zombies wait for their parent, and orphans get adopted by the nearest subreaper or PID 1.</p>
+  <div class="demo">
+    <div class="row">
+      <button type="button" id="tFork" class="primary">fork()</button>
+      <button type="button" id="tExit">exit()</button>
+      <button type="button" id="tWait">wait() for children</button>
+      <button type="button" id="tSub">toggle subreaper</button>
+      <button type="button" id="tReset">reset</button>
+    </div>
+    <div class="row" style="align-items:flex-start; gap:20px; margin-top:12px">
+      <div class="tree" id="tree" style="min-width:260px"></div>
+      <div class="log" id="tLog" style="flex:1; min-width:240px"></div>
+    </div>
+    <div class="legend" style="margin-top:8px"><span style="--sw: var(--c-red-soft)">dashed red = zombie (Z)</span><span style="--sw: var(--c-amber-soft)">amber glow = subreaper</span></div>
+  </div>
+  <div class="demo">
+    <h3>Sessions, process groups and Ctrl+C</h3>
+    <div class="row">
+      <button type="button" data-job="new">run <code>ls | grep txt</code></button>
+      <button type="button" data-job="bgnew">run <code>sleep 100 &amp;</code></button>
+      <button type="button" data-job="int" class="primary">Ctrl+C</button>
+      <button type="button" data-job="tstp">Ctrl+Z</button>
+      <button type="button" data-job="bg">bg</button>
+      <button type="button" data-job="fg">fg</button>
+      <button type="button" data-job="hup">close terminal (SIGHUP)</button>
+    </div>
+    <div class="jobs" id="jobs" style="margin-top:12px"></div>
+    <p class="hint" id="jobNote" style="margin:8px 0 0"></p>
+  </div>
+  <div class="connect">Connection: the terminal driver, not bash, sends SIGINT to the whole foreground group (8.1); a container's PID 1 inherits these adoption duties (10.1).</div>
+</section>
+
+<!-- 4.6 -->
+<section class="card" id="s4-6" data-title="4.6 Niceness">
+  <h2><span class="num">4.6</span>Priority and Niceness</h2>
+  <p class="lead">Nice values map to weights; CPU time is shared in proportion to weight. Each step is about 1.25×.</p>
+  <div class="demo">
+    <div class="row">
+      <label class="inline">task A nice <input type="range" id="niceA" min="-20" max="19" value="0" style="width:160px"> <b class="mono" id="niceAv"></b></label>
+      <label class="inline">task B nice <input type="range" id="niceB" min="-20" max="19" value="5" style="width:160px"> <b class="mono" id="niceBv"></b></label>
+    </div>
+    <div class="bar" id="niceBar" style="margin-top:12px; max-width:640px"></div>
+    <div class="row" id="niceStats" style="margin-top:10px"></div>
+    <p class="hint" style="margin:8px 0 0">Two CPU-bound tasks on one core. Regular users may only raise niceness; lowering it needs root or <code>CAP_SYS_NICE</code>.</p>
+  </div>
+  <div class="connect">Connection: these are the same weights the scheduler uses to grow vruntime (3.6).</div>
+</section>
+
+<!-- 4.7 -->
+<section class="card" id="s4-7" data-title="4.7 Types">
+  <h2><span class="num">4.7</span>Process Types</h2>
+  <p class="lead">Click a type to see what makes it that type and how it looks in <code>ps</code>.</p>
+  <div class="demo">
+    <div class="fields4" id="types"></div>
+    <div class="detail" id="typeDetail"></div>
+  </div>
+  <div class="connect">Connection: zombies and orphans are about the parent relationship (4.5); kernel threads have <code>mm = NULL</code> (6.4).</div>
+</section>
+
+<!-- 4.8 -->
+<section class="card" id="s4-8" data-title="4.8 States">
+  <h2><span class="num">4.8</span>Process States</h2>
+  <p class="lead">Drive one process through its life with events. Only the events valid in the current state are enabled.</p>
+  <div class="demo">
+    <svg id="sm" viewBox="0 0 640 250" width="100%" style="max-width:640px" role="img" aria-label="process state machine"></svg>
+    <div class="legend"><span style="--sw: var(--accent)">current state (arrow = last transition)</span><span style="--sw: var(--bg)">dashed outline = reachable with one event</span></div>
+    <div class="row" id="smBtns" style="margin-top:8px; gap:6px"></div>
+    <p class="big" id="smState" style="margin:10px 0 0"></p>
+    <p id="smMsg" style="margin:4px 0 0; min-height:1.5em"></p>
+  </div>
+  <div class="connect">Connection: S and D are sleeps on wait queues (7.7); D counts toward the load average (3.6); Z waits for the parent's wait() (4.9).</div>
+</section>
+
+<!-- 4.9 -->
+<section class="card" id="s4-9" data-title="4.9 fork & exec">
+  <h2><span class="num">4.9</span>Process Creation: fork, Copy-on-Write, execve, exit</h2>
+  <p class="lead">fork() copies page tables, not pages. Pages are copied only when someone writes.</p>
+  <div class="demo">
+    <h3>fork() and copy-on-write</h3>
+    <div class="row">
+      <button type="button" id="cowFork" class="primary">fork()</button>
+      <label class="inline">page <select id="cowPage"><option>A</option><option>B</option><option>C</option><option>D</option></select></label>
+      <button type="button" id="cowPW">parent writes</button>
+      <button type="button" id="cowCW">child writes</button>
+      <button type="button" id="cowExec">child calls execve()</button>
+      <button type="button" id="cowReset">reset</button>
+    </div>
+    <svg id="cow" viewBox="0 0 620 250" width="100%" style="max-width:620px; margin-top:10px" role="img" aria-label="page tables and physical frames"></svg>
+    <div class="row" id="cowStats"></div>
+    <p class="hint" id="cowMsg" style="margin:8px 0 0"></p>
+  </div>
+  <div class="demo">
+    <h3>fork() returns twice</h3>
+    <table class="mem">
+      <tr><th></th><th>parent (bash, PID 25110)</th><th>child (PID 25111)</th></tr>
+      <tr><td>fork() returns</td><td>25111 (child's PID)</td><td>0</td></tr>
+      <tr><td>getpid()</td><td>25110</td><td>25111</td></tr>
+      <tr><td>getppid()</td><td>bash's own parent</td><td>25110</td></tr>
+    </table>
+  </div>
+  <div class="demo">
+    <h3>execve(): what happens in the kernel</h3>
+    <div class="row"><button type="button" id="exScript" class="primary">run ./my-program.sh (#!/bin/bash)</button><button type="button" id="exElf">run /usr/bin/cat (ELF)</button></div>
+    <div class="stepper" id="execStepper" style="margin-top:12px"></div>
+  </div>
+  <div class="demo">
+    <h3>What survives execve()?</h3>
+    <table class="mem check" id="survive"></table>
+  </div>
+  <div class="demo">
+    <h3>Exit code decoder</h3>
+    <label class="inline">exit status <input type="number" id="ec" value="137" style="width:100px"></label>
+    <div class="row" style="margin-top:6px; gap:6px">
+      <button type="button" data-ec="0">0</button><button type="button" data-ec="1">1</button><button type="button" data-ec="126">126</button><button type="button" data-ec="127">127</button>
+      <button type="button" data-ec="130">130</button><button type="button" data-ec="137">137</button><button type="button" data-ec="139">139</button><button type="button" data-ec="143">143</button><button type="button" data-ec="256">256</button>
+    </div>
+    <p class="big" id="ecOut" style="margin:10px 0 0"></p>
+    <p class="hint" id="ecSub" style="margin:4px 0 0"></p>
+  </div>
+  <div class="connect">Connection: COW is a page fault the kernel resolves (6.5); execve builds new VMAs (6.4) and maps ld.so and libc (6.6); SIGCHLD and wait() end the story (8).</div>
+</section>
+
+<!-- 4.10 -->
+<section class="card" id="s4-10" data-title="4.10 ELF">
+  <h2><span class="num">4.10</span>ELF Files and Linking</h2>
+  <p class="lead">Sections are the linker's view; segments are the loader's view; each loadable segment becomes one VMA. Click a section.</p>
+  <div class="demo">
+    <div class="elf">
+      <div class="col"><b>Sections (linker, debugger)</b><div id="elfSec" class="col"></div></div>
+      <div class="col"><b>Segments (kernel, ld.so)</b><div id="elfSeg" class="col"></div></div>
+      <div class="col"><b>VMAs in /proc/&lt;pid&gt;/maps</b><div id="elfVma" class="col"></div></div>
+    </div>
+    <p class="hint" id="elfNote" style="margin:10px 0 0"></p>
+  </div>
+  <div class="demo">
+    <h3>Static vs dynamic linking: libc code in RAM</h3>
+    <label class="inline">processes running <input type="range" id="nproc" min="1" max="20" value="5" style="width:180px"> <b class="mono" id="nprocV"></b></label>
+    <div class="stack" id="linkBars" style="margin-top:10px; max-width:640px"></div>
+    <p class="hint" style="margin:8px 0 0">Illustrative sizes: assume each program uses about 1 MB of libc code. Dynamic linking maps the same page-cache pages into every process; static linking copies the code into each binary.</p>
+  </div>
+  <div class="connect">Connection: LOAD segments become VMAs with page-table permissions (6.3, 6.4); GNU_STACK makes the stack non-executable (2.7); PIE makes ASLR possible (4.4).</div>
+</section>
+
+</main>
+<footer class="pager">
+  <a href="part3-os.html">← Part 3: OS Fundamentals</a>
+  <a href="index.html">All visuals</a>
+  <a href="part5-threads.html">Part 5: Threads →</a>
+</footer>
+
+<script>
+(function () {
+  'use strict';
+  const $ = (id) => document.getElementById(id);
+  const h = (tag, props, ...kids) => {
+    const n = document.createElement(tag);
+    if (props) for (const k in props) {
+      if (k === 'class') n.className = props[k];
+      else if (k === 'style') n.style.cssText = props[k];
+      else if (k === 'html') n.innerHTML = props[k];
+      else if (k.startsWith('on')) n.addEventListener(k.slice(2), props[k]);
+      else n.setAttribute(k, props[k]);
+    }
+    for (const kid of kids.flat()) if (kid != null) n.append(kid);
+    return n;
+  };
+  const stat = (k, v, cls) => h('div', { class: 'stat' }, h('span', { class: 'k' }, k), h('span', { class: 'v ' + (cls || '') }, String(v)));
+  const NS = 'http://www.w3.org/2000/svg';
+  const sv = (tag, attrs, text) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (text != null) e.textContent = text; return e; };
+  const hex = (n) => '0x' + n.toString(16);
+  const rnd = (n) => Math.floor(Math.random() * n);
+
+  /* theme */
+  const themeBtn = $('themeBtn');
+  function applyTheme(t) {
+    document.documentElement.setAttribute('data-theme', t);
+    themeBtn.innerHTML = t === 'dark' ? '&#9728;' : '&#9790;';
+    themeBtn.title = t === 'dark' ? 'Switch to light mode' : 'Switch to dark mode';
+  }
+  applyTheme(document.documentElement.getAttribute('data-theme'));
+  themeBtn.addEventListener('click', () => {
+    const t = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+    try { localStorage.setItem('theme', t); } catch (e) {}
+    applyTheme(t);
+  });
+
+  /* chips */
+  const chips = $('chips');
+  const sections = [...document.querySelectorAll('section.card')];
+  sections.forEach((s) => chips.append(h('a', { href: '#' + s.id }, s.dataset.title)));
+  const chipLinks = [...chips.children];
+  const io = new IntersectionObserver((entries) => {
+    entries.forEach((e) => {
+      if (!e.isIntersecting) return;
+      chipLinks.forEach((a) => a.classList.toggle('active', a.getAttribute('href') === '#' + e.target.id));
+      const act = chips.querySelector('.active');
+      if (act) act.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    });
+  }, { rootMargin: '-45% 0px -50% 0px' });
+  sections.forEach((s) => io.observe(s));
+
+  function makeStepper(container, getSteps) {
+    let cur = 0;
+    const list = h('ol'), pane = h('div', { class: 'pane' });
+    const prev = h('button', { type: 'button' }, '← Back'), next = h('button', { type: 'button', class: 'primary' }, 'Next →');
+    container.innerHTML = '';
+    container.append(list, h('div', null, pane, h('div', { class: 'nav' }, prev, next)));
+    function render() {
+      const steps = getSteps();
+      if (cur >= steps.length) cur = steps.length - 1;
+      list.innerHTML = '';
+      steps.forEach((s, i) => list.append(h('li', null, h('button', { type: 'button', class: i === cur ? 'cur' : i < cur ? 'done' : '', onclick: () => { cur = i; render(); } }, s.title))));
+      pane.innerHTML = '';
+      pane.append(h('h4', null, steps[cur].title), h('div', { html: steps[cur].text }));
+      prev.disabled = cur === 0; next.disabled = cur === steps.length - 1;
+    }
+    prev.addEventListener('click', () => { if (cur > 0) { cur--; render(); } });
+    next.addEventListener('click', () => { if (cur < getSteps().length - 1) { cur++; render(); } });
+    render();
+    return { render, reset: () => { cur = 0; render(); } };
+  }
+
+  /* ---------- 4.1 ---------- */
+  let nextPid = 5101;
+  const procs = [];
+  function drawProcs() {
+    const box = $('procs');
+    box.innerHTML = '';
+    if (!procs.length) box.append(h('span', { class: 'hint' }, 'No processes yet: the file just sits on disk.'));
+    procs.forEach((p) => box.append(h('div', { class: 'proc' },
+      h('b', null, `PID ${p.pid}`), ` · state S`, h('br'), `text  ${p.text}`, h('br'), `heap  ${p.heap}`, h('br'), `stack ${p.stack}`, h('br'), `fds   0 1 2 → /dev/pts/0`)));
+    $('killProc').disabled = !procs.length;
+  }
+  $('runProc').addEventListener('click', () => {
+    if (procs.length >= 6) return;
+    const base = 0x550000000000 + rnd(0x10000) * 0x1000000;
+    procs.push({ pid: nextPid++, text: hex(base), heap: hex(base + 0x1000000 + rnd(0x400) * 0x1000), stack: hex(0x7ff000000000 + rnd(0xfff) * 0x1000000) });
+    drawProcs();
+  });
+  $('killProc').addEventListener('click', () => { procs.pop(); drawProcs(); });
+  drawProcs();
+
+  /* ---------- 4.2 ---------- */
+  const TS = [
+    ['pid, tgid', 'Identity. <code>pid</code> is really the thread ID; <code>tgid</code> (thread group ID) is what <code>getpid()</code> returns. → 4.5, 5.1'],
+    ['__state', 'R, S, D, T or Z: running/runnable, interruptible sleep, uninterruptible sleep, stopped, zombie. → 4.8'],
+    ['thread (saved regs)', 'CPU state saved on a context switch: kernel stack pointer, FPU/SIMD state. Restored when the task runs again (illusion 1: my own CPU). → 3.5'],
+    ['se, prio, policy', 'Scheduler bookkeeping: <code>vruntime</code>, weight from nice, scheduling class. → 3.6'],
+    ['parent, children', 'The process tree. <code>real_parent</code> created me; <code>parent</code> gets my SIGCHLD. → 4.5'],
+    ['mm → mm_struct', 'Page tables (<code>pgd</code>, loaded into CR3) and the VMAs of the address space (illusion 2: my own memory). NULL for kernel threads. → 6.4'],
+    ['files → files_struct', 'The fd table: fd number → <code>struct file</code>. Shared by threads, copied by fork, kept by exec. → 7.1'],
+    ['fs → fs_struct', 'Current directory (<code>pwd</code>), root (changed by chroot/pivot_root), umask. → 7.3, 10.3'],
+    ['cred', 'uid/euid/suid, gid, capabilities. Checked on every permission decision; changed by setuid exec. → 7.11, 10.4'],
+    ['signal, sighand', 'Pending signals, handlers (shared by threads), resource limits, process group, session, controlling tty. → 8'],
+    ['stack', 'This task\'s kernel stack (16 KiB on x86-64): syscalls and interrupts run on it. → 2.7, 3.3'],
+    ['nsproxy, cgroups', 'Which namespaces this task sees and which cgroups limit it: what makes a container. → 10'],
+  ];
+  function tsShow(i) {
+    [...$('tsFields').children].forEach((b, j) => b.classList.toggle('sel', i === j));
+    $('tsDetail').innerHTML = `<b class="mono">${TS[i][0]}</b><br>${TS[i][1]}`;
+  }
+  TS.forEach(([name], i) => $('tsFields').append(h('button', { type: 'button', onclick: () => tsShow(i) }, name)));
+  tsShow(5);
+
+  /* ---------- 4.3 ---------- */
+  let running = true, saved = null, cpu = { rip: 0x401136, rsp: 0x7ffc5b8e7a40, rax: 0 };
+  function regTable(el, regs, who) {
+    el.innerHTML = '';
+    el.append(h('tr', null, h('th', null, 'reg'), h('th', null, 'value')));
+    ['rip', 'rsp', 'rax'].forEach((r) => el.append(h('tr', null, h('td', null, r), h('td', null, regs ? hex(regs[r]) : '—'))));
+  }
+  function drawCpu() {
+    regTable($('cpuRegs'), running ? cpu : { rip: 0x5603c3a02f10, rsp: 0x7ffd1234a8c0, rax: 0x2a });
+    $('cpuWho').textContent = running ? '(this process running)' : '(another task now)';
+    regTable($('savedRegs'), saved);
+    $('preempt').disabled = !running; $('resume').disabled = running;
+  }
+  setInterval(() => { if (running) { cpu.rip += 4; cpu.rax = (cpu.rax + 1) & 0xff; regTable($('cpuRegs'), cpu); } }, 400);
+  $('preempt').addEventListener('click', () => { saved = Object.assign({}, cpu); running = false; drawCpu(); });
+  $('resume').addEventListener('click', () => { cpu = Object.assign({}, saved); running = true; drawCpu(); });
+  drawCpu();
+
+  /* ---------- 4.4 ---------- */
+  let as;
+  function newAs() {
+    const pie = 0x550000000000 + rnd(0x10000) * 0x1000000;
+    const lib = 0x7f0000000000 + rnd(0xfff) * 0x1000000;
+    const stk = 0x7ffc00000000 + rnd(0x3ff) * 0x1000000;
+    as = { pie, heapStart: pie + 0x2000000 + rnd(0x100) * 0x1000, heapSize: 0x21000, lib, mmaps: 0, stk, stackUsed: 0x21000, dead: false };
+  }
+  function drawAs(flash) {
+    const rows = [
+      ['0xffff800000000000+', 'kernel space (shared by all processes, not accessible from ring 3)', 'var(--c-purple-soft)', 'kern'],
+      [hex(as.stk), `[stack] grows down · ${(as.stackUsed / 1024).toFixed(0)} KiB used of 8 MiB`, 'var(--c-green-soft)', 'stack'],
+      [hex(as.lib), `mmap region: libc.so.6, ld-linux.so${as.mmaps ? ` + ${as.mmaps} anonymous 1 MB mapping(s)` : ''} · grows down`, 'var(--c-blue-soft)', 'mmap'],
+      [hex(as.heapStart), `[heap] grows up via brk() · ${(as.heapSize / 1024).toFixed(0)} KiB`, 'var(--c-amber-soft)', 'heap'],
+      [hex(as.pie + 0xa000), '.bss / .data (rw-p)', 'var(--surface)', 'data'],
+      [hex(as.pie), '.text (r-xp), .rodata (r--p): PIE executable', 'var(--surface)', 'text'],
+      ['0x0', 'unmapped NULL guard: *NULL → SIGSEGV', 'var(--hatch), var(--bg)', 'null'],
+    ];
+    const box = $('aspace');
+    box.innerHTML = '';
+    rows.forEach(([a, z, bg, key]) => box.append(h('div', { class: 'r' }, h('div', { class: 'a' }, a), h('div', { class: 'z' + (key === flash ? ' flash' : ''), style: `background:${bg}` }, z))));
+  }
+  const asMsg = (t, cls) => { $('asMsg').textContent = t; $('asMsg').className = cls || ''; };
+  $('aslr').addEventListener('click', () => { newAs(); drawAs(); asMsg('New process: every base address moved. An exploit can no longer hard-code where code or the stack is.'); });
+  $('mSmall').addEventListener('click', () => { if (as.dead) return; as.heapSize += 0x11000; drawAs('heap'); asMsg('Small allocations come from the heap; malloc called brk() to move the end of the heap VMA up.'); });
+  $('mBig').addEventListener('click', () => { if (as.dead) return; as.mmaps++; as.lib -= 0x101000; drawAs('mmap'); asMsg('1 MB ≥ 128 KiB threshold: malloc used mmap() for a fresh anonymous mapping, returned to the kernel on free().'); });
+  $('recurse').addEventListener('click', () => {
+    if (as.dead) return;
+    as.stackUsed += 0x180000;
+    if (as.stackUsed >= 0x800000) { as.stackUsed = 0x800000; as.dead = true; drawAs('stack'); asMsg('Stack overflow: the next frame touched the guard gap, outside any VMA → page fault → SIGSEGV. Start a new process to try again.', 'bad'); return; }
+    drawAs('stack'); asMsg('Each call pushes a frame: rsp moves down. The stack VMA grows on demand up to the 8 MiB limit (ulimit -s).');
+  });
+  newAs(); drawAs();
+
+  /* ---------- 4.5 tree ---------- */
+  let nodes, sel, nextTPid;
+  const tlog = (t) => { const l = $('tLog'); l.append(h('div', null, t)); l.scrollTop = l.scrollHeight; };
+  function tReset() {
+    nodes = [{ pid: 1, name: 'systemd', ppid: 0, z: false, sub: false }, { pid: 100, name: 'bash', ppid: 1, z: false, sub: false },
+      { pid: 200, name: 'python', ppid: 100, z: false, sub: false }, { pid: 201, name: 'worker', ppid: 200, z: false, sub: false }];
+    sel = 200; nextTPid = 300; $('tLog').innerHTML = ''; tlog('Select a process, then use the buttons.'); tDraw();
+  }
+  const byPid = (p) => nodes.find((n) => n.pid === p);
+  function tDraw() {
+    const build = (ppid) => {
+      const kids = nodes.filter((n) => n.ppid === ppid);
+      if (!kids.length) return null;
+      return h('ul', null, kids.map((n) => h('li', null,
+        h('button', { type: 'button', class: (n.pid === sel ? 'sel ' : '') + (n.z ? 'zombie ' : '') + (n.sub ? 'sub' : ''), onclick: () => { sel = n.pid; tDraw(); } },
+          `${n.pid} ${n.name}${n.z ? ' <defunct> Z' : ''}${n.sub ? ' (subreaper)' : ''}`), build(n.pid))));
+    };
+    $('tree').innerHTML = ''; $('tree').append(build(0));
+    const s = byPid(sel);
+    $('tFork').disabled = !s || s.z || nodes.length > 14;
+    $('tExit').disabled = !s || s.z || s.pid === 1;
+    $('tWait').disabled = !s || s.z;
+    $('tSub').disabled = !s || s.z || s.pid === 1;
+  }
+  function reapIfInit(n) { if (n.z && n.ppid === 1) { nodes = nodes.filter((x) => x !== n); tlog(`PID 1 reaped zombie ${n.pid} immediately.`); } }
+  $('tFork').addEventListener('click', () => { const s = byPid(sel); const n = { pid: nextTPid++, name: s.name === 'systemd' ? 'service' : s.name, ppid: s.pid, z: false, sub: false }; nodes.push(n); tlog(`${s.pid} forked → child ${n.pid} (fork returned ${n.pid} in the parent, 0 in the child).`); sel = n.pid; tDraw(); });
+  $('tExit').addEventListener('click', () => {
+    const s = byPid(sel);
+    s.z = true;
+    tlog(`${s.pid} exited: memory and fds freed, but it stays a ZOMBIE until ${s.ppid} calls wait(). SIGCHLD sent to ${s.ppid}.`);
+    const kids = nodes.filter((n) => n.ppid === s.pid);
+    if (kids.length) {
+      let anc = byPid(s.ppid);
+      while (anc && anc.pid !== 1 && (anc.z || !anc.sub)) anc = byPid(anc.ppid);
+      const np = anc ? anc.pid : 1;
+      kids.forEach((k) => { k.ppid = np; tlog(`orphan ${k.pid} reparented to ${np}${np === 1 ? ' (PID 1)' : ' (nearest subreaper)'}.`); });
+      kids.forEach(reapIfInit);
+    }
+    reapIfInit(s);
+    sel = s.ppid; tDraw();
+  });
+  $('tWait').addEventListener('click', () => {
+    const s = byPid(sel);
+    const zs = nodes.filter((n) => n.ppid === s.pid && n.z);
+    if (!zs.length) tlog(nodes.some((n) => n.ppid === s.pid) ? `${s.pid} calls wait(): no child has exited yet, so it would block.` : `${s.pid} calls wait(): no children → -1 ECHILD.`);
+    zs.forEach((z) => { nodes = nodes.filter((n) => n !== z); tlog(`${s.pid} wait() → reaped ${z.pid}, exit status 0. Its task_struct is freed.`); });
+    tDraw();
+  });
+  $('tSub').addEventListener('click', () => { const s = byPid(sel); s.sub = !s.sub; tlog(`${s.pid}: prctl(PR_SET_CHILD_SUBREAPER, ${s.sub ? 1 : 0}).`); tDraw(); });
+  $('tReset').addEventListener('click', tReset);
+  tReset();
+
+  /* ---------- 4.5 jobs ---------- */
+  let jobs, jobPid;
+  function jobsReset() { jobs = [{ pgid: 4200, cmd: 'ls | grep txt', procs: [['ls', 'R'], ['grep', 'S']], fg: true, done: false }, { pgid: 4300, cmd: 'sleep 100 &', procs: [['sleep', 'S']], fg: false, done: false }]; jobPid = 4400; }
+  function jobsDraw(note) {
+    const live = jobs.filter((j) => !j.done);
+    const box = $('jobs');
+    box.innerHTML = '';
+    const fgJob = live.find((j) => j.fg);
+    box.append(h('div', { class: 'job' + (fgJob ? '' : ' fg') }, h('b', null, 'session 4120'), ' · controlling terminal /dev/pts/0 · ', h('span', { class: 'pill' }, '4120 bash (session leader)'), fgJob ? '' : h('b', { class: 'ok' }, ' ← foreground')));
+    live.forEach((j) => box.append(h('div', { class: 'job' + (j.fg ? ' fg' : '') },
+      h('b', null, `process group ${j.pgid}`), ` · ${j.cmd} `, j.fg ? h('b', { class: 'ok' }, '← foreground') : h('span', { class: 'hint' }, 'background'), h('br'),
+      j.procs.map(([n, st], i) => h('span', { class: 'pill ' + st }, `${j.pgid + i} ${n} ${st}`)))));
+    $('jobNote').textContent = note || 'The terminal sends keyboard signals to every process in the foreground process group.';
+  }
+  document.querySelectorAll('[data-job]').forEach((b) => b.addEventListener('click', () => {
+    const a = b.dataset.job, live = jobs.filter((j) => !j.done), fgJob = live.find((j) => j.fg);
+    if (a === 'new' || a === 'bgnew') {
+      if (a === 'new' && fgJob) return jobsDraw('A job already holds the terminal; bash only reads your next command when the foreground job finishes or stops.');
+      jobs.push({ pgid: jobPid, cmd: a === 'new' ? 'ls | grep txt' : 'sleep 100 &', procs: a === 'new' ? [['ls', 'R'], ['grep', 'S']] : [['sleep', 'S']], fg: a === 'new', done: false });
+      jobPid += 100; return jobsDraw(a === 'new' ? 'New pipeline: both processes share one process group, which bash made the foreground group (tcsetpgrp).' : 'Started in the background: its own process group, not the foreground one.');
+    }
+    if (a === 'int') { if (!fgJob) return jobsDraw('Ctrl+C with only bash in the foreground: bash catches SIGINT and just prints a new prompt.'); fgJob.done = true; return jobsDraw(`Ctrl+C → the TTY driver sent SIGINT to every process in group ${fgJob.pgid}. Both died (status 130); bash is foreground again. The background job didn't notice.`); }
+    if (a === 'tstp') { if (!fgJob) return jobsDraw('Nothing to stop.'); fgJob.procs.forEach((p) => p[1] = 'T'); fgJob.fg = false; return jobsDraw(`Ctrl+Z → SIGTSTP to group ${fgJob.pgid}: stopped (T). bash takes the terminal back.`); }
+    if (a === 'bg') { const st = live.find((j) => j.procs.some((p) => p[1] === 'T')); if (!st) return jobsDraw('No stopped job.'); st.procs.forEach((p) => p[1] = 'S'); return jobsDraw(`bg → SIGCONT to group ${st.pgid}: it runs again, in the background.`); }
+    if (a === 'fg') { if (fgJob) return jobsDraw('There is already a foreground job.'); const j = live[live.length - 1]; if (!j) return jobsDraw('No jobs.'); j.procs.forEach((p) => { if (p[1] === 'T') p[1] = 'S'; }); j.fg = true; return jobsDraw(`fg → group ${j.pgid} gets the terminal (and SIGCONT if it was stopped).`); }
+    if (a === 'hup') { live.forEach((j) => j.done = true); jobsDraw('Terminal closed → SIGHUP to the session leader, forwarded to all jobs: everything is gone. (nohup or setsid would have survived.)'); setTimeout(() => { jobsReset(); jobsDraw('New login: fresh session.'); }, 2500); }
+  }));
+  jobsReset(); jobsDraw();
+
+  /* ---------- 4.6 ---------- */
+  const WEIGHTS = [88761, 71755, 56483, 46273, 36291, 29154, 23254, 18705, 14949, 11916, 9548, 7620, 6100, 4904, 3906, 3121, 2501, 1991, 1586, 1277,
+    1024, 820, 655, 526, 423, 335, 272, 215, 172, 137, 110, 87, 70, 56, 45, 36, 29, 23, 18, 15];
+  function niceDraw() {
+    const a = +$('niceA').value, b = +$('niceB').value, wa = WEIGHTS[a + 20], wb = WEIGHTS[b + 20], pa = wa / (wa + wb) * 100;
+    $('niceAv').textContent = a; $('niceBv').textContent = b;
+    $('niceBar').innerHTML = '';
+    $('niceBar').append(h('div', { style: `flex:${pa}; background: var(--c-blue-soft)` }, `A ${pa.toFixed(1)}%`), h('div', { style: `flex:${100 - pa}; background: var(--c-pink-soft)` }, `B ${(100 - pa).toFixed(1)}%`));
+    const st = $('niceStats');
+    st.innerHTML = '';
+    st.append(stat('A weight', wa), stat('A prio', 120 + a), stat('B weight', wb), stat('B prio', 120 + b));
+  }
+  ['niceA', 'niceB'].forEach((id) => $(id).addEventListener('input', niceDraw));
+  niceDraw();
+
+  /* ---------- 4.7 ---------- */
+  const TYPES = [
+    ['Foreground', 'Holds the terminal: it is in the foreground process group, so Ctrl+C/Ctrl+Z reach it.', 'S+  ./build.sh'],
+    ['Background', 'Started with &: runs without holding the terminal. Reading from the terminal would stop it (SIGTTIN).', 'S   sleep 100'],
+    ['Daemon', 'Runs for as long as the system is up, detached from any terminal (setsid or started by systemd). TTY column shows ?.', 'Ss  /usr/sbin/sshd -D'],
+    ['Zombie', 'Exited, but its parent hasn\'t called wait() yet. Only the task_struct and exit status remain.', 'Z   [worker] <defunct>'],
+    ['Orphan', 'Still running, but its parent exited first; reparented to a subreaper or PID 1. Not a state, a relationship.', 'S   python app.py (PPID 1)'],
+    ['Kernel thread', 'Runs only in kernel mode, mm = NULL. Children of kthreadd (PID 2), shown in [brackets].', 'I   [kworker/0:1]'],
+  ];
+  TYPES.forEach(([name, desc, ps], i) => $('types').append(h('button', { type: 'button', onclick: () => {
+    [...$('types').children].forEach((b, j) => b.classList.toggle('sel', i === j));
+    $('typeDetail').innerHTML = `<b>${name}</b><br>${desc}<br><span class="mono hint">ps: ${ps.replace(/</g, '&lt;')}</span>`;
+  } }, name)));
+  $('types').firstChild.click();
+
+  /* ---------- 4.8 ---------- */
+  const POS = { Runnable: [90, 60], Running: [290, 60], Z: [470, 60], Gone: [585, 60], T: [90, 190], S: [290, 190], D: [470, 190] };
+  const LABEL = { Runnable: 'R (runnable)', Running: 'R (on CPU)', S: 'S sleep', D: 'D disk wait', T: 'T stopped', Z: 'Z zombie', Gone: 'reaped' };
+  let smS = 'Runnable', smPrev = null, killPending = false;
+  const EVENTS = [
+    ['scheduler picks it', { Runnable: 'Running' }, 'It was the leftmost task in the run queue; context switch in.'],
+    ['time slice over', { Running: 'Runnable' }, 'Preempted (involuntary): still runnable, just waiting for a CPU.'],
+    ['read() a socket, no data', { Running: 'S' }, 'Interruptible sleep on the socket\'s wait queue. Signals can wake it.'],
+    ['read() from a slow disk', { Running: 'D' }, 'Uninterruptible sleep: waits for the I/O no matter what. Counts toward the load average.'],
+    ['data / I/O arrives', { S: 'Runnable', D: 'Runnable' }, 'Woken up: back on a run queue. (Not running yet!)'],
+    ['kill -9 (SIGKILL)', { Runnable: 'Z', Running: 'Z', S: 'Z', T: 'Z' }, 'Killed: no handler can run; the kernel tears it down. Exit status 137.'],
+    ['Ctrl+Z / SIGSTOP', { Running: 'T', Runnable: 'T', S: 'T' }, 'Stopped. Only SIGCONT resumes it.'],
+    ['SIGCONT (fg / bg)', { T: 'Runnable' }, 'Continued: runnable again.'],
+    ['exit()', { Running: 'Z' }, 'Exited: resources freed, exit status kept. Parent gets SIGCHLD.'],
+    ['parent calls wait()', { Z: 'Gone' }, 'Reaped: the task_struct is freed and the PID can be reused.'],
+    ['fork() a new one', { Gone: 'Runnable' }, 'A fresh process starts life runnable.'],
+  ];
+  function smDraw() {
+    const svg = $('sm');
+    svg.innerHTML = '';
+    const defs = sv('defs', {});
+    const m = sv('marker', { id: 'arr', viewBox: '0 0 10 10', refX: 9, refY: 5, markerWidth: 7, markerHeight: 7, orient: 'auto-start-reverse' });
+    m.append(sv('path', { d: 'M0,0 L10,5 L0,10 z', fill: 'var(--accent)' }));
+    defs.append(m); svg.append(defs);
+    if (smPrev && smPrev !== smS) {
+      const [x1, y1] = POS[smPrev], [x2, y2] = POS[smS];
+      const dx = x2 - x1, dy = y2 - y1, len = Math.hypot(dx, dy), ux = dx / len, uy = dy / len;
+      const pad = (ax, ay) => Math.min(Math.abs(ax) > 1e-6 ? 50 / Math.abs(ax) : 1e9, Math.abs(ay) > 1e-6 ? 22 / Math.abs(ay) : 1e9);
+      const p = pad(ux, uy);
+      svg.append(sv('line', { x1: x1 + ux * p, y1: y1 + uy * p, x2: x2 - ux * (p + 4), y2: y2 - uy * (p + 4), stroke: 'var(--accent)', 'stroke-width': 2.5, 'marker-end': 'url(#arr)' }));
+    }
+    const nextStates = new Set(EVENTS.map(([, map]) => map[smS]).filter(Boolean));
+    Object.entries(POS).forEach(([k, [x, y]]) => {
+      const cur = k === smS;
+      const nxt = !cur && nextStates.has(k);
+      svg.append(sv('rect', { x: x - 48, y: y - 20, width: 96, height: 40, rx: 8, fill: cur ? 'var(--accent)' : 'var(--bg)', stroke: cur || nxt ? 'var(--accent)' : 'var(--border)', 'stroke-width': nxt ? 2 : 1.5, 'stroke-dasharray': nxt ? '5 3' : '' }));
+      svg.append(sv('text', { x, y: y + 5, 'text-anchor': 'middle', 'font-size': 12, 'font-weight': cur ? 700 : 400, fill: cur ? '#fff' : 'var(--text)' }, LABEL[k]));
+    });
+    const btns = $('smBtns');
+    btns.innerHTML = '';
+    EVENTS.forEach(([name, map, msg]) => {
+      let enabled = !!map[smS];
+      if (name.startsWith('kill') && smS === 'D') enabled = true;
+      const btn = h('button', { type: 'button', onclick: () => {
+        if (name.startsWith('kill') && smS === 'D') { killPending = true; $('smMsg').textContent = 'SIGKILL is now PENDING: a task in D state is not woken by signals. It dies as soon as the I/O completes.'; return; }
+        smPrev = smS; smS = map[smS];
+        let text = msg;
+        if (killPending && name === 'data / I/O arrives') { smS = 'Z'; killPending = false; text = 'I/O completed, and the pending SIGKILL is acted on immediately: zombie, status 137.'; }
+        $('smMsg').textContent = text; smDraw();
+      } }, name);
+      btn.disabled = !enabled;
+      btns.append(btn);
+    });
+    const stat_ = { Runnable: 'R', Running: 'R', S: 'S', D: 'D', T: 'T', Z: 'Z', Gone: '(not in ps any more)' }[smS];
+    $('smState').textContent = `ps STAT: ${stat_}` + (killPending ? '   (SIGKILL pending)' : '');
+  }
+  smDraw();
+
+  /* ---------- 4.9 COW ---------- */
+  let cow;
+  function cowReset() {
+    cow = { frames: [{ id: 7, label: 'A' }, { id: 9, label: 'B' }, { id: 12, label: 'C' }, { id: 15, label: 'D' }], parent: { A: 7, B: 9, C: 12, D: 15 }, child: null, ro: {}, copies: 0, nextFrame: 20, execd: false };
+    cowDraw('One process: four private pages, all writable.');
+  }
+  const shared = (f) => cow.child && Object.values(cow.parent).includes(f) && Object.values(cow.child).includes(f);
+  function cowDraw(msg) {
+    const svg = $('cow');
+    svg.innerHTML = '';
+    const pages = ['A', 'B', 'C', 'D'];
+    const frameY = {};
+    cow.frames.forEach((f, i) => { frameY[f.id] = 42 + i * 36; });
+    svg.setAttribute('viewBox', `0 0 620 ${Math.max(250, 60 + cow.frames.length * 36)}`);
+    svg.append(sv('text', { x: 70, y: 16, 'text-anchor': 'middle', 'font-size': 12, fill: 'var(--muted)' }, 'parent page table'));
+    svg.append(sv('text', { x: 310, y: 16, 'text-anchor': 'middle', 'font-size': 12, fill: 'var(--muted)' }, 'physical frames'));
+    if (cow.child) svg.append(sv('text', { x: 550, y: 16, 'text-anchor': 'middle', 'font-size': 12, fill: 'var(--muted)' }, 'child page table'));
+    const pt = (x, owner, map) => pages.forEach((p, i) => {
+      const y = 40 + i * 50, f = map[p], ro = shared(f);
+      svg.append(sv('rect', { x: x - 50, y: y - 16, width: 100, height: 32, rx: 6, fill: 'var(--bg)', stroke: 'var(--border)' }));
+      svg.append(sv('text', { x: x - 10, y: y + 5, 'text-anchor': 'middle', 'font-size': 12, fill: 'var(--text)' }, `page ${p}`));
+      svg.append(sv('text', { x: x + 32, y: y + 5, 'text-anchor': 'middle', 'font-size': 11, fill: ro ? 'var(--c-red)' : 'var(--c-green)' }, ro ? 'R/O' : 'R/W'));
+      const fx = 310 + (owner === 'p' ? -60 : 60);
+      svg.append(sv('line', { x1: owner === 'p' ? x + 50 : x - 50, y1: y, x2: fx, y2: frameY[f], stroke: ro ? 'var(--c-red)' : 'var(--accent)', 'stroke-width': 1.6, 'stroke-dasharray': ro ? '5 3' : '' }));
+    });
+    cow.frames.forEach((f) => {
+      const y = frameY[f.id];
+      svg.append(sv('rect', { x: 250, y: y - 14, width: 120, height: 28, rx: 6, fill: shared(f.id) ? 'var(--c-red-soft)' : 'var(--surface-2)', stroke: 'var(--border)' }));
+      svg.append(sv('text', { x: 310, y: y + 4, 'text-anchor': 'middle', 'font-size': 12, fill: 'var(--text)' }, `frame #${f.id}: ${f.label}`));
+    });
+    pt(70, 'p', cow.parent);
+    if (cow.child) pt(550, 'c', cow.child);
+    const used = new Set([...Object.values(cow.parent), ...(cow.child ? Object.values(cow.child) : [])]);
+    cow.frames = cow.frames.filter((f) => used.has(f.id));
+    const st = $('cowStats');
+    st.innerHTML = '';
+    st.append(stat('frames in use', used.size), stat('pages copied', cow.copies), stat('shared (COW)', [...used].filter(shared).length));
+    $('cowMsg').textContent = msg;
+    $('cowFork').disabled = !!cow.child;
+    $('cowCW').disabled = !cow.child; $('cowExec').disabled = !cow.child || cow.execd;
+  }
+  function write(who) {
+    const p = $('cowPage').value, map = who === 'parent' ? cow.parent : cow.child, f = map[p];
+    if (shared(f)) {
+      const nf = cow.nextFrame++;
+      cow.frames.push({ id: nf, label: p + "'" });
+      map[p] = nf; cow.copies++;
+      cowDraw(`${who} wrote page ${p}: page fault (write to R/O PTE in a writable VMA) → kernel copied frame #${f} to new frame #${nf} and mapped it R/W for the ${who}. The other side keeps #${f}, now private, so it becomes R/W too.`);
+    } else cowDraw(`${who} wrote page ${p}: it's not shared, so no fault and no copy: just a normal write.`);
+  }
+  $('cowFork').addEventListener('click', () => { cow.child = Object.assign({}, cow.parent); cowDraw('fork(): the child got a COPY OF THE PAGE TABLES, pointing at the same frames. Every shared page is marked read-only in both. Zero pages copied.'); });
+  $('cowPW').addEventListener('click', () => write('parent'));
+  $('cowCW').addEventListener('click', () => write('child'));
+  $('cowExec').addEventListener('click', () => {
+    ['A', 'B', 'C', 'D'].forEach((p) => { const nf = cow.nextFrame++; cow.frames.push({ id: nf, label: 'new ' + p }); cow.child[p] = nf; });
+    cow.execd = true;
+    cowDraw('execve(): the child threw away its whole address space and mapped the new program. The parent\'s pages are no longer shared: they are private (R/W) again without ever being copied.');
+  });
+  $('cowReset').addEventListener('click', cowReset);
+  cowReset();
+
+  /* ---------- 4.9 execve ---------- */
+  let exKind = 'script';
+  function execSteps() {
+    const common = [
+      { title: 'Resolve the path', text: 'The VFS walks the path from the current directory (<code>task_struct->fs</code>), looking up dentries and finally the inode of the file.' },
+      { title: 'Read the first 256 bytes', text: 'The kernel opens the file and reads its first bytes (<code>BINPRM_BUF_SIZE</code> = 256) into a <code>linux_binprm</code>.' },
+      { title: 'Permission checks', text: 'Regular file? Filesystem not mounted <code>noexec</code>? Execute bit set for your credentials? setuid/setgid applied here. A failure is <code>EACCES</code> → exit code 126.' },
+    ];
+    const elfSteps = [
+      { title: 'binfmt_elf matches \\x7fELF', text: 'The handlers are asked in turn. The magic bytes are <code>7f 45 4c 46</code> ("\\x7fELF"), so <b>binfmt_elf</b> takes it.' },
+      { title: 'Tear down the old memory', text: '<code>exec_mmap()</code> discards the forked copy of the parent\'s address space. Other threads are killed: after exec there is exactly one thread.' },
+      { title: 'Build the new address space', text: 'New VMAs for each LOAD segment, the stack and <code>ld-linux.so</code>. Nothing is read yet: it is all demand-paged. argv, envp and auxv go on the new stack.' },
+      { title: 'Jump to the new code', text: 'rip = the dynamic linker\'s entry point. It maps libc, resolves symbols, then calls main. Same PID, same <code>task_struct</code>: an in-place metamorphosis.' },
+    ];
+    if (exKind === 'elf') return common.concat(elfSteps);
+    return common.concat([
+      { title: 'binfmt_script matches #!', text: 'The first bytes are <code>#!/bin/bash</code>. binfmt_elf says no; <b>binfmt_script</b> recognizes <code>#!</code>.' },
+      { title: 'Restart with the interpreter', text: '<code>load_script()</code> parses the interpreter path and restarts the lookup: now executing <code>/bin/bash</code> with <code>./my-program.sh</code> as its argument.' },
+    ], elfSteps.map((s, i) => i === 0 ? { title: 'binfmt_elf matches /bin/bash', text: '<code>/bin/bash</code> starts with <code>7f 45 4c 46</code>, so this time binfmt_elf takes it.' } : s));
+  }
+  const exStepper = makeStepper($('execStepper'), execSteps);
+  $('exScript').addEventListener('click', () => { exKind = 'script'; $('exScript').classList.add('primary'); $('exElf').classList.remove('primary'); exStepper.reset(); });
+  $('exElf').addEventListener('click', () => { exKind = 'elf'; $('exElf').classList.add('primary'); $('exScript').classList.remove('primary'); exStepper.reset(); });
+
+  const SURV = [
+    [true, 'PID, TID, PPID'], [true, 'open file descriptors (unless FD_CLOEXEC)'], [true, 'current working directory'],
+    [false, 'memory: code, data, heap, stack, mappings'], [false, 'other threads (exec leaves exactly one)'],
+    [false, 'caught signal handlers (reset to default: the handler code is gone)'], [true, 'ignored signals (SIG_IGN), signal mask, pending signals'],
+    [true, 'process group, session, controlling terminal'], [true, 'resource limits, nice value, cgroups, namespaces'],
+    [true, 'real/effective/saved UID and GID (except setuid/setgid adjustments)'],
+  ];
+  $('survive').append(h('tr', null, h('th', null, ''), h('th', null, 'state')));
+  SURV.forEach(([ok, t]) => $('survive').append(h('tr', null, h('td', { class: ok ? 'ok' : 'bad' }, ok ? '✓' : '✗'), h('td', null, t))));
+
+  const SIG = { 1: 'SIGHUP', 2: 'SIGINT (Ctrl+C)', 3: 'SIGQUIT', 4: 'SIGILL', 5: 'SIGTRAP', 6: 'SIGABRT (abort/assert)', 7: 'SIGBUS', 8: 'SIGFPE', 9: 'SIGKILL (often the OOM killer)', 10: 'SIGUSR1', 11: 'SIGSEGV (segfault)', 12: 'SIGUSR2', 13: 'SIGPIPE', 14: 'SIGALRM', 15: 'SIGTERM (e.g. docker stop)' };
+  function decode() {
+    const raw = Math.floor(+$('ec').value || 0), v = ((raw % 256) + 256) % 256;
+    let main, sub = raw !== v ? `Only the low 8 bits reach the parent: ${raw} mod 256 = ${v}.` : '';
+    if (v === 0) main = '0 → success';
+    else if (v === 1) main = '1 → general error';
+    else if (v === 2) main = '2 → misuse of a builtin / bad usage';
+    else if (v === 126) main = '126 → found but not executable (EACCES)';
+    else if (v === 127) main = '127 → command not found (ENOENT)';
+    else if (v > 128 && v - 128 <= 64) main = `${v} = 128 + ${v - 128} → killed by signal ${v - 128}: ${SIG[v - 128] || 'signal ' + (v - 128)}`;
+    else main = `${v} → program-defined error code`;
+    $('ecOut').textContent = main; $('ecSub').textContent = sub;
+  }
+  $('ec').addEventListener('input', decode);
+  document.querySelectorAll('[data-ec]').forEach((b) => b.addEventListener('click', () => { $('ec').value = b.dataset.ec; decode(); }));
+  decode();
+
+  /* ---------- 4.10 ELF ---------- */
+  const SECS = [['ELF header + program headers', 1], ['.interp', 1], ['.dynsym / .dynstr', 1], ['.rodata', 1], ['.plt', 2], ['.text', 2], ['.got', 3], ['.data', 3], ['.bss (no file bytes)', 3], ['.symtab / .strtab', 0], ['.debug_*', 0]];
+  const SEGS = { 1: ['LOAD  R    (headers, .rodata)', 'r--p  /usr/bin/prog'], 2: ['LOAD  R E  (.text)', 'r-xp  /usr/bin/prog'], 3: ['LOAD  RW   (.data, .bss)', 'rw-p  /usr/bin/prog  (+ zero pages for .bss)'] };
+  function elfDraw(sel) {
+    const segOf = sel == null ? null : SECS[sel][1];
+    const s = $('elfSec'), g = $('elfSeg'), v = $('elfVma');
+    s.innerHTML = ''; g.innerHTML = ''; v.innerHTML = '';
+    SECS.forEach(([name, seg], i) => s.append(h('button', { type: 'button', class: `it ${seg ? 'seg' + seg : 'none'}${i === sel ? ' on' : ''}`, onclick: () => elfDraw(i) }, name)));
+    [1, 2, 3].forEach((k) => { g.append(h('div', { class: `it seg${k}${k === segOf ? ' on' : ''}` }, SEGS[k][0])); v.append(h('div', { class: `it seg${k}${k === segOf ? ' on' : ''}` }, SEGS[k][1])); });
+    g.append(h('div', { class: 'it none' }, 'INTERP → /lib64/ld-linux-x86-64.so.2'), h('div', { class: 'it none' }, 'GNU_STACK  RW (not executable)'));
+    $('elfNote').textContent = sel == null ? 'Click a section on the left.'
+      : segOf ? `${SECS[sel][0]} is packed into the ${['', 'read-only', 'read + execute', 'read + write'][segOf]} LOAD segment, which execve maps as one VMA.`
+      : `${SECS[sel][0]} is not in any loadable segment: only the linker and debuggers use it, and strip removes it. The program runs without it.`;
+  }
+  elfDraw(5);
+
+  function linkDraw() {
+    const n = +$('nproc').value;
+    $('nprocV').textContent = n;
+    const box = $('linkBars');
+    box.innerHTML = '';
+    const max = 20;
+    [['dynamic: shared page-cache pages', 1, 'var(--c-green)'], ['static: a copy inside each binary', n, 'var(--c-red)']].forEach(([label, mb, col]) => {
+      box.append(h('div', null, h('div', { class: 'hint' }, `${label}: ${mb} MB`), h('div', { style: `height:14px; width:${Math.max(2, mb / max * 100)}%; background:${col}; border-radius:4px` })));
+    });
+  }
+  $('nproc').addEventListener('input', linkDraw);
+  linkDraw();
+})();
+</script>
+</body>
+</html>

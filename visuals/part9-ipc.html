@@ -1,0 +1,735 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IPC, Visualized</title>
+<meta name="description" content="Interactive visuals for Part 9 of System Internals: pipes, Unix sockets, shared memory, message queues, network sockets and the path of a packet.">
+<script>
+  (function () {
+    var saved = null;
+    try { saved = localStorage.getItem('theme'); } catch (e) {}
+    var dark = saved ? saved === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches;
+    document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+  })();
+</script>
+<style>
+  :root {
+    --bg: #ffffff; --surface: #f6f8fa; --surface-2: #eaeef2; --text: #1f2328; --muted: #59636e;
+    --border: #d0d7de; --accent: #0969da; --accent-soft: #ddf4ff;
+    --c-blue: #0969da; --c-pink: #bf3989; --c-green: #1a7f37; --c-amber: #9a6700; --c-purple: #8250df; --c-red: #cf222e;
+    --c-blue-soft: #ddf4ff; --c-pink-soft: #ffeff7; --c-green-soft: #dafbe1; --c-amber-soft: #fff8c5; --c-purple-soft: #fbefff; --c-red-soft: #ffebe9;
+    --hatch: repeating-linear-gradient(45deg, transparent 0 4px, rgba(130,80,223,.22) 4px 7px);
+    --radius: 8px;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  html[data-theme="dark"] {
+    --bg: #0d1117; --surface: #151b23; --surface-2: #212830; --text: #e6edf3; --muted: #9198a1;
+    --border: #3d444d; --accent: #4493f8; --accent-soft: rgba(56,139,253,.15);
+    --c-blue: #4493f8; --c-pink: #f778ba; --c-green: #3fb950; --c-amber: #d29922; --c-purple: #ab7df8; --c-red: #f85149;
+    --c-blue-soft: rgba(56,139,253,.18); --c-pink-soft: rgba(247,120,186,.16); --c-green-soft: rgba(63,185,80,.16);
+    --c-amber-soft: rgba(210,153,34,.18); --c-purple-soft: rgba(171,125,248,.18); --c-red-soft: rgba(248,81,73,.16);
+    --hatch: repeating-linear-gradient(45deg, transparent 0 4px, rgba(171,125,248,.30) 4px 7px);
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif; }
+  a { color: var(--accent); }
+  code, .mono { font-family: var(--mono); font-size: .92em; }
+  code { background: var(--surface-2); padding: .1em .35em; border-radius: 4px; }
+
+  header.top { max-width: 1040px; margin: 0 auto; padding: 32px 16px 8px; }
+  header.top h1 { margin: 0 0 6px; font-size: clamp(28px, 5vw, 40px); line-height: 1.15; }
+  header.top p { margin: 0 0 8px; color: var(--muted); max-width: 70ch; }
+  .backlink { font-size: 14px; }
+
+  nav.chips { position: sticky; top: 0; z-index: 10; background: var(--bg); border-bottom: 1px solid var(--border); }
+  nav.chips .inner { max-width: 1040px; margin: 0 auto; padding: 8px 16px; display: flex; gap: 6px; overflow-x: auto; scrollbar-width: thin; }
+  nav.chips a { flex: none; font-size: 13px; padding: 4px 10px; border: 1px solid var(--border); border-radius: 999px;
+                color: var(--text); text-decoration: none; background: var(--surface); white-space: nowrap; }
+  nav.chips a:hover, nav.chips a.active { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+
+  main { max-width: 1040px; margin: 0 auto; padding: 8px 16px 64px; }
+  section.card { border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin: 24px 0; background: var(--bg); scroll-margin-top: 56px; }
+  section.card > h2 { margin: 0 0 4px; font-size: 22px; }
+  section.card > h2 .num { color: var(--muted); font-weight: 500; margin-right: 6px; }
+  .lead { color: var(--muted); margin: 0 0 16px; max-width: 75ch; }
+  .demo { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; margin: 12px 0; overflow-x: auto; }
+  .demo h3 { margin: 0 0 10px; font-size: 15px; }
+  .row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+  .stack { display: flex; flex-direction: column; gap: 10px; }
+  .connect { font-size: 14px; color: var(--muted); border-left: 3px solid var(--accent); padding: 4px 0 4px 10px; margin-top: 14px; }
+  .hint { font-size: 13px; color: var(--muted); }
+  .big { font-family: var(--mono); font-size: 22px; font-weight: 600; }
+  .stat { display: inline-flex; flex-direction: column; padding: 6px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg); min-width: 90px; }
+  .stat .k { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  .stat .v { font-family: var(--mono); font-size: 18px; font-weight: 600; }
+  .ok { color: var(--c-green); } .bad { color: var(--c-red); } .warn { color: var(--c-amber); }
+
+  button, select, input[type="text"], input[type="number"] {
+    font: inherit; font-size: 14px; color: var(--text); background: var(--bg);
+    border: 1px solid var(--border); border-radius: 6px; padding: 5px 10px;
+  }
+  button { cursor: pointer; }
+  button:hover { background: var(--surface-2); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover { filter: brightness(1.08); background: var(--accent); }
+  button:focus-visible, select:focus-visible, input:focus-visible, .bit:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  input[type="range"] { accent-color: var(--accent); width: min(360px, 100%); }
+  label.inline { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; }
+
+  /* bits */
+  .bits { display: inline-flex; gap: 4px; flex-wrap: nowrap; }
+  .bitcol { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+  .bit { width: 34px; height: 40px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg);
+         font: 600 18px var(--mono); color: var(--muted); cursor: pointer; padding: 0; transition: background .12s, color .12s; }
+  .bit.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .bit.sm { width: 22px; height: 30px; font-size: 14px; }
+  .bitcol .w { font: 11px var(--mono); color: var(--muted); }
+  .nibble { display: inline-flex; flex-direction: column; align-items: center; gap: 6px; padding: 6px; border: 1px dashed var(--border); border-radius: 8px; }
+  .nibble .hx { font: 700 22px var(--mono); color: var(--c-pink); }
+  .gap { width: 10px; }
+
+  /* byte cells */
+  .cells { display: grid; gap: 2px; }
+  .cell { height: 30px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg);
+          font: 11px var(--mono); color: var(--muted); display: flex; align-items: center; justify-content: center; position: relative; }
+  .cell.hl { background: var(--c-blue-soft); border-color: var(--c-blue); color: var(--text); font-weight: 600; }
+  .cell.hl2 { background: var(--c-pink-soft); border-color: var(--c-pink); color: var(--text); }
+  .cell.pad { background: var(--hatch), var(--bg); border-style: dashed; }
+  .cell.line { background: var(--c-amber-soft); }
+  .cell.boxstart { margin-left: 6px; }
+  .cell.lineb { box-shadow: -4px 0 0 0 var(--c-red); margin-left: 8px; }
+
+  table.mem { border-collapse: collapse; font-family: var(--mono); font-size: 14px; }
+  table.mem th, table.mem td { border: 1px solid var(--border); padding: 4px 10px; text-align: center; }
+  table.mem th { background: var(--surface-2); font-weight: 600; font-family: inherit; font-size: 13px; }
+
+  .tiles { display: grid; gap: 1px; }
+  .tile { width: 9px; height: 9px; background: var(--surface-2); border-radius: 1px; }
+  .tile.mark { background: var(--c-pink); }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 13px; color: var(--muted); }
+  .legend span::before { content: ""; display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 5px; vertical-align: -2px; background: var(--sw); border: 1px solid var(--border); }
+
+  /* address space */
+  .addrspace { display: grid; grid-template-columns: 120px 1fr; gap: 0; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; font-size: 13px; max-width: 560px; }
+  .addrspace > div { padding: 8px 10px; border-bottom: 1px solid var(--border); }
+  .addrspace .lbl { font-family: var(--mono); font-size: 11px; color: var(--muted); background: var(--surface-2); }
+  .addrspace .zone.kern { background: var(--c-purple-soft); }
+  .addrspace .zone.hole { background: var(--hatch), var(--bg); color: var(--muted); }
+  .addrspace .zone.user { background: var(--c-green-soft); }
+  .addrspace .zone.here { outline: 3px solid var(--accent); outline-offset: -3px; font-weight: 600; }
+  .bar { height: 26px; border-radius: 6px; display: flex; overflow: hidden; border: 1px solid var(--border); font-size: 12px; }
+  .bar > div { display: flex; align-items: center; justify-content: center; color: var(--text); white-space: nowrap; overflow: hidden; }
+  .logbar { display: grid; grid-template-columns: 110px 1fr 90px; gap: 6px 10px; align-items: center; font-size: 13px; }
+  .logbar .fill { height: 14px; border-radius: 4px; background: var(--accent); }
+
+  /* struct */
+  .fields { display: flex; flex-direction: column; gap: 6px; }
+  .field { display: flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 14px; }
+  .field .sw { width: 14px; height: 14px; border-radius: 3px; }
+  .field button { padding: 2px 8px; font-size: 13px; }
+  .structgrid { display: grid; grid-template-columns: 56px repeat(8, minmax(38px, 1fr)); gap: 3px; align-items: center; max-width: 520px; }
+  .structgrid .off { font: 11px var(--mono); color: var(--muted); text-align: right; padding-right: 6px; }
+  .structgrid .cell { height: 34px; font-size: 12px; color: var(--text); }
+
+  /* matrix sim */
+  .matrix { display: grid; grid-template-columns: repeat(8, 30px); gap: 3px; }
+  .matrix .cell { height: 30px; transition: background .1s; }
+  .matrix .cell.cached { background: var(--c-blue-soft); }
+  .matrix .cell.hit { background: var(--c-green); color: #fff; border-color: var(--c-green); }
+  .matrix .cell.miss { background: var(--c-red); color: #fff; border-color: var(--c-red); }
+  .matrix .cell.gb { margin-left: 5px; }
+
+  .cores { display: grid; grid-template-columns: repeat(2, minmax(160px, 1fr)); gap: 12px; max-width: 560px; }
+  .core { border: 1px solid var(--border); border-radius: 8px; padding: 10px; background: var(--bg); transition: box-shadow .15s; }
+  .core.flash { box-shadow: 0 0 0 3px var(--c-red); }
+  .core h4 { margin: 0 0 6px; font-size: 14px; }
+  .state { font: 600 13px var(--mono); padding: 2px 6px; border-radius: 4px; }
+  .state.M { background: var(--c-green-soft); color: var(--c-green); }
+  .state.I { background: var(--c-red-soft); color: var(--c-red); }
+  .state.S { background: var(--c-blue-soft); color: var(--c-blue); }
+  .state.none { background: var(--surface-2); color: var(--muted); }
+
+  /* float */
+  .fbits { display: flex; flex-wrap: wrap; gap: 2px; }
+  .fbits .bit { width: 20px; height: 30px; font-size: 13px; }
+  .fbits .bit.s { --tone: var(--c-red); } .fbits .bit.e { --tone: var(--c-blue); } .fbits .bit.f { --tone: var(--c-green); }
+  .fbits .bit { border-color: var(--tone); color: var(--tone); }
+  .fbits .bit.on { background: var(--tone); color: #fff; }
+  .fbits .sep { width: 8px; }
+  .exact { font-family: var(--mono); font-size: 13px; word-break: break-all; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; }
+
+  /* utf8 */
+  .cps { display: flex; flex-wrap: wrap; gap: 10px; }
+  .cp { border: 1px solid var(--border); border-radius: 8px; background: var(--bg); padding: 10px; min-width: 150px; }
+  .cp .ch { font-size: 30px; line-height: 1.1; }
+  .cp .u { font: 600 13px var(--mono); color: var(--c-purple); }
+  .cp .bytes { font: 13px var(--mono); margin-top: 6px; }
+  .cp .pre { color: var(--muted); }
+  .cp .pay { color: var(--c-green); font-weight: 600; }
+  .cp .hexb { color: var(--c-pink); }
+
+  svg text { font-family: var(--mono); }
+  .theme-btn { position: fixed; top: 10px; right: 12px; z-index: 20; width: 34px; height: 34px; padding: 0; font-size: 16px; }
+  @media (max-width: 600px) {
+    section.card { padding: 14px; }
+    .bit { width: 30px; height: 36px; font-size: 16px; }
+    .structgrid { grid-template-columns: 44px repeat(8, minmax(28px, 1fr)); }
+  }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+
+  footer.pagenav { max-width: 1040px; margin: 0 auto; padding: 0 16px 48px; display: flex; flex-wrap: wrap; gap: 8px 16px; justify-content: space-between; font-size: 14px; }
+  footer.pagenav a { text-decoration: none; }
+  .badge { display: inline-block; font: 600 12px var(--mono); padding: 1px 7px; border-radius: 999px; border: 1px solid var(--border); background: var(--surface-2); color: var(--muted); }
+  .badge.R { background: var(--c-green-soft); color: var(--c-green); border-color: var(--c-green); }
+  .badge.S { background: var(--c-blue-soft); color: var(--c-blue); border-color: var(--c-blue); }
+  .badge.D { background: var(--c-amber-soft); color: var(--c-amber); border-color: var(--c-amber); }
+  .badge.Z { background: var(--c-purple-soft); color: var(--c-purple); border-color: var(--c-purple); }
+  .badge.X { background: var(--c-red-soft); color: var(--c-red); border-color: var(--c-red); }
+  .log { font: 12.5px/1.5 var(--mono); background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; height: 150px; overflow-y: auto; white-space: pre-wrap; }
+  .box { border: 1px solid var(--border); border-radius: 8px; background: var(--bg); padding: 10px; }
+  .box h4 { margin: 0 0 6px; font-size: 14px; }
+  .on-acc { outline: 3px solid var(--accent); outline-offset: 1px; }
+  table.grid { border-collapse: collapse; font-size: 14px; width: 100%; }
+  table.grid th, table.grid td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; vertical-align: top; }
+  table.grid th { background: var(--surface-2); font-size: 13px; }
+  table.grid tr.pick td { background: var(--accent-soft); }
+  .steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+  .steps li { padding: 6px 10px; border-radius: 6px; border: 1px solid transparent; font-size: 14px; cursor: pointer; }
+  .steps li.cur { border-color: var(--accent); background: var(--accent-soft); font-weight: 600; }
+  .steps li.done { color: var(--muted); }
+
+  .ring { display: grid; grid-template-columns: repeat(16, minmax(18px, 1fr)); gap: 3px; max-width: 640px; }
+  .ring .cell.full { background: var(--c-blue); border-color: var(--c-blue); color: #fff; }
+  .ring .cell.rp { box-shadow: inset 0 -3px 0 var(--c-green); }
+  .ring .cell.wp { box-shadow: inset 0 3px 0 var(--c-pink); }
+  .ring .cell.rp.wp { box-shadow: inset 0 3px 0 var(--c-pink), inset 0 -3px 0 var(--c-green); }
+  .procpair { display: grid; grid-template-columns: 1fr auto 1fr; gap: 12px; align-items: center; }
+  .arrow { font: 600 18px var(--mono); color: var(--muted); text-align: center; }
+  .fdline { font: 13px var(--mono); padding: 2px 0; }
+  .fdline.new { color: var(--c-green); font-weight: 700; }
+  .sfile { border: 2px solid var(--c-purple); border-radius: 8px; padding: 8px 10px; background: var(--c-purple-soft); font: 13px var(--mono); text-align: center; }
+  .qitem { display: inline-flex; flex-direction: column; align-items: center; padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); font: 13px var(--mono); }
+  .qitem b { color: var(--c-pink); font-size: 11px; }
+  .chunk { display: inline-block; padding: 3px 8px; margin: 2px; border-radius: 4px; font: 13px var(--mono); border: 1px solid var(--border); background: var(--bg); }
+  .chunk.lost { text-decoration: line-through; color: var(--c-red); border-color: var(--c-red); background: var(--c-red-soft); }
+  .pathgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 8px; }
+  .pstage { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; background: var(--bg); font-size: 13px; }
+  .pstage b { display: block; font-size: 13px; }
+  .pstage .lay { font: 11px var(--mono); color: var(--muted); }
+  .pstage.cur { outline: 3px solid var(--accent); outline-offset: 1px; background: var(--accent-soft); }
+  .pstage.done { opacity: .6; }
+  .cpubar { height: 22px; border-radius: 6px; background: var(--surface-2); border: 1px solid var(--border); overflow: hidden; }
+  .cpubar > div { height: 100%; background: var(--c-green); transition: width .2s; }
+  .cpubar > div.hot { background: var(--c-red); }
+</style>
+</head>
+<body>
+<button class="theme-btn" id="themeBtn" type="button" aria-label="Toggle dark mode"></button>
+
+<header class="top">
+  <a class="backlink" href="../#9-inter-process-communication-ipc">← Back to the notes: Part 9</a>
+  <h1>IPC, Visualized</h1>
+  <p>Processes are isolated, so every conversation between them goes through the kernel. Pick a mechanism, fill a pipe, pass a file descriptor, race on shared memory, and follow a packet from the wire to read().</p>
+</header>
+
+<nav class="chips" aria-label="Sections"><div class="inner" id="chips"></div></nav>
+
+<main>
+
+<section class="card" id="s9-0" data-title="Choosing IPC">
+  <h2><span class="num">9</span>Which IPC Should I Use?</h2>
+  <p class="lead">Answer four questions; the recommendation and its row in the comparison table light up.</p>
+  <div class="demo">
+    <div class="row">
+      <label class="inline">Where? <select id="qWhere"><option value="local">same machine</option><option value="net">across machines</option></select></label>
+      <label class="inline">What? <select id="qWhat"><option value="notify">just a notification</option><option value="stream" selected>a stream of bytes</option><option value="msgs">discrete messages</option><option value="bulk">large data, high throughput</option></select></label>
+      <label class="inline">Related? <select id="qRel"><option value="related">parent/child (inherited fds)</option><option value="unrelated">unrelated processes</option></select></label>
+      <label class="inline">Direction? <select id="qDir"><option value="one">one-way</option><option value="two">two-way</option></select></label>
+    </div>
+    <p class="big" id="qOut" style="margin:14px 0 6px; font-size:19px"></p>
+    <p class="hint" id="qWhy" style="margin:0 0 12px"></p>
+    <div style="overflow-x:auto"><table class="grid" id="qTable"></table></div>
+  </div>
+  <div class="connect">Connection: every mechanism here is a kernel object behind an fd or a shared mapping (7.4, 6.6), inherited across fork (4.9).</div>
+</section>
+
+<section class="card" id="s9-1" data-title="9.1 Pipes">
+  <h2><span class="num">9.1</span>Pipes and Named Pipes (FIFOs)</h2>
+  <p class="lead">A pipe is a one-way byte stream with a ring buffer in the kernel. Scaled down here: 16 slots stand for the real 64 KiB. Make the writer faster than the reader and watch backpressure; then close an end.</p>
+  <div class="demo">
+    <div class="row">
+      <label class="inline">writer speed <input type="range" id="pW" min="0" max="10" value="7" style="width:130px"></label>
+      <label class="inline">reader speed <input type="range" id="pR" min="0" max="10" value="3" style="width:130px"></label>
+      <button type="button" id="pPlay" class="primary">▶ Run</button>
+      <button type="button" id="pCloseW">close write end</button>
+      <button type="button" id="pCloseR">close read end</button>
+      <button type="button" id="pReset">reset</button>
+    </div>
+    <div class="ring" id="pRing" style="margin-top:14px"></div>
+    <div class="legend" style="margin-top:6px"><span style="--sw: var(--c-blue)">byte waiting in the buffer</span><span style="--sw: var(--c-pink)">write position</span><span style="--sw: var(--c-green)">read position</span></div>
+    <div class="row" style="margin-top:10px">
+      <div class="box" style="min-width:200px"><h4>writer: <code>yes</code></h4><span class="badge" id="pWs">R</span> <span class="hint" id="pWd"></span></div>
+      <div class="box" style="min-width:200px"><h4>reader: <code>head</code></h4><span class="badge" id="pRs">R</span> <span class="hint" id="pRd"></span></div>
+      <div id="pStats" class="row"></div>
+    </div>
+    <div class="log" id="pLog" style="margin-top:10px"></div>
+  </div>
+  <div class="demo">
+    <h3>Named pipe: <code>mkfifo mypipe</code></h3>
+    <p class="hint" style="margin:0 0 8px">A FIFO has a name (file type <code>p</code>), so unrelated processes can open it. <code>open()</code> blocks until the other end is opened too.</p>
+    <div class="row">
+      <button type="button" id="fW">echo hello &gt; mypipe</button>
+      <button type="button" id="fR">cat &lt; mypipe</button>
+      <button type="button" id="fReset">reset</button>
+    </div>
+    <div class="log" id="fLog" style="height:96px; margin-top:10px"></div>
+  </div>
+  <div class="connect">Connection: blocked ends sleep in state S on the pipe's wait queue (7.7); SIGPIPE is Part 8; the shell builds pipelines with pipe + fork + dup2 (7.5, Part 11).</div>
+</section>
+
+<section class="card" id="s9-2" data-title="9.2 Unix sockets">
+  <h2><span class="num">9.2</span>Unix Domain Sockets</h2>
+  <p class="lead">Local, two-way, faster than TCP over loopback, and able to do two things no other IPC can: tell the server who the client is, and hand over an open file descriptor.</p>
+  <div class="demo">
+    <h3>SO_PEERCRED: the kernel vouches for the caller</h3>
+    <div class="procpair">
+      <div class="box"><h4>client: <code>docker ps</code></h4><div class="fdline">pid 4321, uid 1000 (berat)</div><div class="fdline">groups: berat, docker</div></div>
+      <div class="arrow">⇄<div class="hint" style="font-size:11px">/run/docker.sock<br>srw-rw---- root docker</div></div>
+      <div class="box"><h4>server: <code>dockerd</code></h4><div class="fdline" id="credOut">accepted a connection…</div></div>
+    </div>
+    <div class="row" style="margin-top:10px"><button type="button" id="credBtn" class="primary">getsockopt(SO_PEERCRED)</button>
+      <label class="inline"><input type="checkbox" id="credGrp" checked> client is in the <code>docker</code> group</label></div>
+  </div>
+  <div class="demo">
+    <h3>SCM_RIGHTS: passing an open file descriptor</h3>
+    <div class="procpair">
+      <div class="box"><h4>sender (pid 900)</h4><div id="scmA"></div></div>
+      <div class="sfile" id="scmFile">struct file<br>/var/log/app.log<br>f_pos = <span id="scmPos">120</span><br>f_count = <span id="scmCnt">1</span></div>
+      <div class="box"><h4>receiver (pid 1200)</h4><div id="scmB"></div></div>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <button type="button" id="scmSend" class="primary">sendmsg(fd 5, SCM_RIGHTS)</button>
+      <button type="button" id="scmRead">receiver: read(7, buf, 10)</button>
+      <button type="button" id="scmReset">reset</button>
+    </div>
+    <p class="hint" id="scmMsg" style="margin:8px 0 0"></p>
+  </div>
+  <div class="connect">Connection: the received fd points at the same open file description (7.2), so the offset is shared; socket permissions are plain file permissions (7.11).</div>
+</section>
+
+<section class="card" id="s9-3" data-title="9.3 Shared memory">
+  <h2><span class="num">9.3</span>Shared Memory</h2>
+  <p class="lead">Two processes map the same physical frames, usually at different virtual addresses. After setup there are no system calls and no copies, which is also why every race condition from Part 5 comes back.</p>
+  <div class="demo">
+    <svg id="shmSvg" viewBox="0 0 640 220" width="100%" style="max-width:640px" role="img" aria-label="Two processes mapping the same frames"></svg>
+    <p class="hint" style="margin:6px 0 0">The segment is a file in <code>/dev/shm</code> (tmpfs) mapped with <code>MAP_SHARED</code> (6.6).</p>
+  </div>
+  <div class="demo">
+    <h3>Race: both processes do <code>counter++</code> 1,000 times</h3>
+    <p class="hint" style="margin:0 0 8px">Simulated: each increment is read → add → write, and the scheduler may switch processes between any two steps (here with a fixed probability).</p>
+    <div class="row">
+      <button type="button" id="raceNo" class="primary">▶ Run without a lock</button>
+      <button type="button" id="raceLock">▶ Run with a process-shared mutex</button>
+    </div>
+    <div class="row" id="raceStats" style="margin-top:10px"></div>
+    <pre class="mono" id="raceTrace" style="margin:10px 0 0; font-size:13px"></pre>
+  </div>
+  <div class="connect">Connection: process-shared mutexes work because futexes can be keyed by the shared physical page (5.3); the mapping is a VMA pointing at page-cache pages of a tmpfs file (6.4, 6.7).</div>
+</section>
+
+<section class="card" id="s9-4" data-title="9.4 Message queues">
+  <h2><span class="num">9.4</span>Message Queues</h2>
+  <p class="lead">Kernel-managed queues of discrete messages: boundaries are preserved, unlike a pipe. POSIX queues deliver the highest priority first, and FIFO among equal priorities.</p>
+  <div class="demo">
+    <div class="row">
+      <input type="text" id="mqText" value="resize img42" size="16" aria-label="message">
+      <label class="inline">priority <input type="number" id="mqPrio" min="0" max="9" value="5" style="width:64px"></label>
+      <button type="button" id="mqSend" class="primary">mq_send</button>
+      <button type="button" id="mqRecv">mq_receive</button>
+      <button type="button" id="mqFill">add 4 messages</button>
+    </div>
+    <div class="row" id="mqQueue" style="margin-top:14px; gap:6px; min-height:52px"></div>
+    <p class="mono" id="mqOut" style="margin:10px 0 0"></p>
+  </div>
+  <div class="connect">Connection: POSIX queues show up as files in <code>/dev/mqueue</code> and their descriptors work with epoll (7.8); the IPC namespace isolates them per container (10.1).</div>
+</section>
+
+<section class="card" id="s9-5" data-title="9.5 Network sockets">
+  <h2><span class="num">9.5</span>Network Sockets and the Path of a Packet</h2>
+  <p class="lead">TCP is a byte stream; UDP is datagrams. And below the socket, every packet takes the same trip through the kernel.</p>
+  <div class="demo">
+    <h3>Byte stream vs datagrams: the sender does three writes</h3>
+    <div class="row"><code>write("HELLO")</code><code>write("WORLD")</code><code>write("!")</code>
+      <label class="inline" style="margin-left:8px">UDP loss <input type="range" id="udpLoss" min="0" max="60" value="20" style="width:120px"> <b class="mono" id="udpLossV"></b></label>
+      <button type="button" id="netSend" class="primary">▶ Send</button></div>
+    <div class="stack" style="margin-top:12px">
+      <div><b>TCP</b> <span class="hint">reads on the receiver (boundaries are gone; everything arrives, in order):</span><div id="tcpOut"></div></div>
+      <div><b>UDP</b> <span class="hint">recvfrom() on the receiver (each datagram whole, but some may be lost):</span><div id="udpOut"></div></div>
+    </div>
+  </div>
+  <div class="demo">
+    <h3>The path of a received packet</h3>
+    <div class="row"><button type="button" id="pkPrev">◀ Prev</button><button type="button" id="pkNext" class="primary">Next ▶</button><button type="button" id="pkPlay">▶ Play</button><span class="hint" id="pkCount"></span></div>
+    <div class="pathgrid" id="pkGrid" style="margin-top:12px"></div>
+    <p id="pkText" style="margin:12px 0 0"></p>
+  </div>
+  <div class="demo">
+    <h3>One interrupt per packet vs NAPI polling</h3>
+    <p class="hint" style="margin:0 0 8px">Illustrative costs, not measurements: 1 µs of overhead per interrupt, 0.5 µs to process each packet, NAPI budget of 64 packets per poll, one core.</p>
+    <label class="inline"><span style="white-space:nowrap">packets per second</span> <input type="range" id="ppsR" min="0" max="100" value="45"> <b class="mono" id="ppsV"></b></label>
+    <div class="stack" style="margin-top:10px; max-width:600px">
+      <div>interrupt per packet <span class="mono" id="irqPct"></span><div class="cpubar"><div id="irqBar"></div></div></div>
+      <div>NAPI <span class="mono" id="napiPct"></span><div class="cpubar"><div id="napiBar"></div></div></div>
+    </div>
+    <p class="hint" id="ppsMsg" style="margin:8px 0 0"></p>
+  </div>
+  <div class="connect">Connection: DMA and interrupts (2.5, 3.4), the NET_RX softirq (3.4), wait queues and epoll (7.7, 7.8), netfilter NAT for containers (10.3), and big-endian headers (1.5).</div>
+</section>
+
+</main>
+
+<footer class="pagenav">
+  <a href="part8-signals.html">← Part 8: Signals</a>
+  <a href="index.html">All visuals</a>
+  <a href="part10-containers.html">Part 10: Containers →</a>
+</footer>
+
+<script>
+(function () {
+  'use strict';
+
+  const $ = (id) => document.getElementById(id);
+  const h = (tag, props, ...kids) => {
+    const n = document.createElement(tag);
+    if (props) for (const k in props) {
+      if (k === 'class') n.className = props[k];
+      else if (k === 'style') n.style.cssText = props[k];
+      else if (k.startsWith('on')) n.addEventListener(k.slice(2), props[k]);
+      else n.setAttribute(k, props[k]);
+    }
+    for (const kid of kids.flat()) if (kid != null && kid !== false) n.append(kid);
+    return n;
+  };
+  const NS = 'http://www.w3.org/2000/svg';
+  const sv = (tag, attrs, text) => { const e = document.createElementNS(NS, tag); for (const k in attrs) e.setAttribute(k, attrs[k]); if (text != null) e.textContent = text; return e; };
+  const hex = (n, w) => n.toString(16).toUpperCase().padStart(w, '0');
+  const bin = (n, w) => n.toString(2).padStart(w, '0');
+  const stat = (k, v, cls) => h('div', { class: 'stat' }, h('span', { class: 'k' }, k), h('span', { class: 'v ' + (cls || '') }, String(v)));
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  const themeBtn = $('themeBtn');
+  function applyTheme(t) {
+    document.documentElement.setAttribute('data-theme', t);
+    themeBtn.innerHTML = t === 'dark' ? '&#9728;' : '&#9790;';
+    themeBtn.title = t === 'dark' ? 'Switch to light mode' : 'Switch to dark mode';
+  }
+  applyTheme(document.documentElement.getAttribute('data-theme'));
+  themeBtn.addEventListener('click', () => {
+    const t = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+    try { localStorage.setItem('theme', t); } catch (e) {}
+    applyTheme(t);
+  });
+
+  const chips = $('chips');
+  const sections = [...document.querySelectorAll('section.card')];
+  sections.forEach((s) => chips.append(h('a', { href: '#' + s.id }, s.dataset.title)));
+  const chipLinks = [...chips.children];
+  const io = new IntersectionObserver((entries) => {
+    entries.forEach((e) => {
+      if (!e.isIntersecting) return;
+      chipLinks.forEach((a) => a.classList.toggle('active', a.getAttribute('href') === '#' + e.target.id));
+      const act = chips.querySelector('.active');
+      if (act) act.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    });
+  }, { rootMargin: '-45% 0px -50% 0px' });
+  sections.forEach((s) => io.observe(s));
+
+
+  /* ---------- chooser ---------- */
+  const MECH = [
+    ['signal', 'Signals', 'No (just a number)', 'No', 'No', 'Fast', 'Notifications: stop, reload, child exited'],
+    ['pipe', 'Anonymous pipe', 'Byte stream, one-way', 'Yes (inherited fd)', 'No', 'Fast', 'Shell pipelines'],
+    ['fifo', 'Named pipe (FIFO)', 'Byte stream, one-way', 'No (has a path)', 'No', 'Fast', 'Simple producer/consumer'],
+    ['unix', 'Unix domain socket', 'Stream or datagrams, two-way, can pass fds', 'No', 'No', 'Fast', 'Local services: Docker, systemd, databases'],
+    ['shm', 'Shared memory', 'Raw memory', 'No', 'No', 'Fastest (no copy)', 'Large data, high throughput'],
+    ['mq', 'Message queue', 'Discrete messages', 'No', 'No', 'Medium', 'Structured messaging'],
+    ['tcp', 'TCP/UDP socket', 'Stream / datagrams', 'No', 'Yes', 'Slower (network stack)', 'Everything networked'],
+  ];
+  const qt = $('qTable');
+  qt.append(h('tr', null, ...['Mechanism', 'Data?', 'Related only?', 'Across machines?', 'Speed', 'Typical use'].map((t) => h('th', null, t))));
+  MECH.forEach((m) => qt.append(h('tr', { 'data-m': m[0] }, ...m.slice(1).map((t) => h('td', null, t)))));
+  function choose() {
+    const where = $('qWhere').value, what = $('qWhat').value, rel = $('qRel').value, dir = $('qDir').value;
+    let pick, out, why;
+    if (where === 'net') { pick = 'tcp'; out = 'TCP (or UDP) socket'; why = 'Only network sockets cross machines. TCP for a reliable stream, UDP for datagrams that may be lost.'; }
+    else if (what === 'notify') { pick = 'signal'; out = 'A signal (e.g. SIGHUP to reload, SIGUSR1)'; why = 'Signals carry no data, only a number, which is exactly enough for "something happened".'; }
+    else if (what === 'bulk') { pick = 'shm'; out = 'Shared memory + a process-shared mutex or semaphore'; why = 'No copying through the kernel after setup; but you must synchronize access yourself.'; }
+    else if (what === 'msgs') { pick = dir === 'two' ? 'unix' : 'mq'; out = dir === 'two' ? 'Unix socket (SOCK_SEQPACKET or SOCK_DGRAM)' : 'POSIX message queue'; why = dir === 'two' ? 'Message boundaries preserved, two-way, plus credential and fd passing.' : 'Discrete messages with priorities; the queue outlives the processes.'; }
+    else if (dir === 'two') { pick = 'unix'; out = 'Unix domain socket (SOCK_STREAM)'; why = 'Pipes are one-way; a Unix socket is a two-way stream between any local processes.'; }
+    else if (rel === 'related') { pick = 'pipe'; out = 'Anonymous pipe: pipe() before fork()'; why = 'Both ends are fds inherited through fork, like every shell pipeline.'; }
+    else { pick = 'fifo'; out = 'Named pipe: mkfifo'; why = 'Unrelated processes need a name to find the pipe; a FIFO is a pipe with a path.'; }
+    $('qOut').textContent = '→ ' + out;
+    $('qWhy').textContent = why;
+    qt.querySelectorAll('tr[data-m]').forEach((r) => r.classList.toggle('pick', r.dataset.m === pick));
+  }
+  ['qWhere', 'qWhat', 'qRel', 'qDir'].forEach((id) => $(id).addEventListener('change', choose));
+  choose();
+
+  /* ---------- pipe simulator ---------- */
+  const N = 16;
+  let P;
+  const ringCells = [];
+  for (let i = 0; i < N; i++) { const c = h('div', { class: 'cell' }, ''); ringCells.push(c); $('pRing').append(c); }
+  function plog(msg) { const l = $('pLog'); l.textContent += msg + '\n'; l.scrollTop = l.scrollHeight; }
+  function pReset() {
+    clearInterval(P && P.timer);
+    P = { buf: [], rp: 0, wp: 0, written: 0, read: 0, wOpen: true, rOpen: true, wState: 'R', rState: 'R', done: false, timer: null, tick: 0, wAcc: 0, rAcc: 0 };
+    $('pLog').textContent = '';
+    plog('pipe([3, 4]): fd 3 = read end, fd 4 = write end. Buffer: 16 slots (stands for 64 KiB).');
+    pDraw();
+  }
+  function pDraw() {
+    ringCells.forEach((c, i) => {
+      const off = (i - P.rp + N) % N;
+      const full = off < P.buf.length;
+      c.className = 'cell' + (full ? ' full' : '') + (i === P.rp ? ' rp' : '') + (i === P.wp ? ' wp' : '');
+      c.textContent = full ? P.buf[off] : '';
+    });
+    const badge = (el, s) => { el.className = 'badge ' + s; el.textContent = s; };
+    badge($('pWs'), P.wState); badge($('pRs'), P.rState);
+    $('pWd').textContent = P.wState === 'X' ? 'killed by SIGPIPE (exit 141)' : !P.wOpen ? 'closed its write end' : P.wState === 'S' ? 'blocked: buffer full' : 'writing';
+    $('pRd').textContent = P.rState === 'X' ? 'got EOF, exited' : !P.rOpen ? 'closed its read end' : P.rState === 'S' ? 'blocked: buffer empty' : 'reading';
+    const st = $('pStats'); st.innerHTML = '';
+    st.append(stat('in buffer', P.buf.length + ' / ' + N), stat('written', P.written), stat('read', P.read));
+  }
+  function pStep() {
+    P.tick++;
+    P.wAcc += +$('pW').value; P.rAcc += +$('pR').value;
+    if (P.wOpen && P.wState !== 'X' && P.wAcc >= 10) {
+      P.wAcc -= 10;
+      if (!P.rOpen) {
+        P.wState = 'X'; P.wOpen = false;
+        plog('write(4): no reader left -> kernel sends SIGPIPE -> writer terminated (shell shows 141 = 128 + 13)');
+      } else if (P.buf.length >= N) {
+        if (P.wState !== 'S') plog('write(4): buffer full -> writer sleeps (S) until the reader makes room. Backpressure!');
+        P.wState = 'S';
+      } else {
+        if (P.wState === 'S') plog('reader made room -> writer woken (R)');
+        P.wState = 'R'; P.buf.push('y'); P.wp = (P.wp + 1) % N; P.written++;
+      }
+    }
+    if (P.rOpen && P.rState !== 'X' && P.rAcc >= 10) {
+      P.rAcc -= 10;
+      if (P.buf.length) {
+        if (P.rState === 'S') plog('data arrived -> reader woken (R)');
+        P.rState = 'R'; P.buf.shift(); P.rp = (P.rp + 1) % N; P.read++;
+      } else if (!P.wOpen) {
+        P.rState = 'X'; P.rOpen = false;
+        plog('read(3) = 0: buffer empty AND no write end open anywhere -> EOF -> reader exits');
+      } else {
+        if (P.rState !== 'S') plog('read(3): buffer empty -> reader sleeps (S) until data arrives');
+        P.rState = 'S';
+      }
+    }
+    pDraw();
+    if (!P.wOpen && !P.rOpen && P.timer) { clearInterval(P.timer); P.timer = null; }
+  }
+  $('pPlay').addEventListener('click', () => { if (!P.timer) P.timer = setInterval(pStep, 140); });
+  $('pCloseW').addEventListener('click', () => { if (P.wOpen) { P.wOpen = false; if (P.wState !== 'X') P.wState = 'closed'; plog('writer: close(4). Remaining bytes can still be read; then read() returns 0.'); if (!P.timer) P.timer = setInterval(pStep, 140); pDraw(); } });
+  $('pCloseR').addEventListener('click', () => { if (P.rOpen) { P.rOpen = false; P.rState = 'closed'; plog('reader: close(3) (like head exiting after one line). The next write will get SIGPIPE.'); if (!P.timer) P.timer = setInterval(pStep, 140); pDraw(); } });
+  $('pReset').addEventListener('click', pReset);
+  pReset();
+
+  let fifo = { w: false, r: false, done: false };
+  function flog(m) { $('fLog').textContent += m + '\n'; }
+  function fCheck() {
+    if (fifo.w && fifo.r && !fifo.done) { fifo.done = true; flog('both ends open -> both open() calls return; "hello\\n" flows through the kernel buffer (never to disk)'); flog('cat prints: hello'); }
+  }
+  $('fW').addEventListener('click', () => { if (fifo.w) return; fifo.w = true; flog(fifo.r ? 'writer: open(O_WRONLY) returns at once (a reader is waiting)' : 'writer: open("mypipe", O_WRONLY) BLOCKS: no reader yet (state S)'); fCheck(); });
+  $('fR').addEventListener('click', () => { if (fifo.r) return; fifo.r = true; flog(fifo.w ? 'reader: open(O_RDONLY) returns at once (a writer is waiting)' : 'reader: open("mypipe", O_RDONLY) BLOCKS: no writer yet (state S)'); fCheck(); });
+  $('fReset').addEventListener('click', () => { fifo = { w: false, r: false, done: false }; $('fLog').textContent = '$ mkfifo mypipe   ->   prw-r--r-- mypipe (size 0)\n'; });
+  $('fReset').click();
+
+  /* ---------- SO_PEERCRED ---------- */
+  $('credBtn').addEventListener('click', () => {
+    const inGrp = $('credGrp').checked;
+    const o = $('credOut');
+    o.innerHTML = '';
+    o.append(h('div', null, 'peer: pid=4321 uid=1000 gid=1000'), h('div', { class: 'hint' }, '(filled in by the kernel, not the client: it cannot lie)'));
+    o.append(h('div', { class: inGrp ? 'ok' : 'bad', style: 'font-weight:700; margin-top:4px' },
+      inGrp ? 'connect() was allowed by the socket file mode (group docker can write)' : 'connect() fails with EACCES: socket is srw-rw---- root:docker'));
+  });
+
+  /* ---------- SCM_RIGHTS ---------- */
+  let scm;
+  function scmDraw() {
+    const fdl = (list) => list.map(([n, t, isNew]) => h('div', { class: 'fdline' + (isNew ? ' new' : '') }, `fd ${n} → ${t}`));
+    $('scmA').innerHTML = ''; $('scmB').innerHTML = '';
+    fdl(scm.a).forEach((x) => $('scmA').append(x));
+    fdl(scm.b).forEach((x) => $('scmB').append(x));
+    $('scmPos').textContent = scm.pos; $('scmCnt').textContent = scm.cnt;
+  }
+  function scmReset() {
+    scm = { a: [[0, '/dev/pts/1'], [1, '/dev/pts/1'], [2, '/dev/pts/1'], [5, 'struct file (app.log) ●']], b: [[0, '/dev/null'], [1, 'journal'], [2, 'journal'], [3, 'socket']], pos: 120, cnt: 1, sent: false };
+    $('scmMsg').textContent = 'The sender has app.log open at offset 120. The receiver may not even have permission to open() that file itself.';
+    scmDraw();
+  }
+  $('scmSend').addEventListener('click', () => {
+    if (scm.sent) return;
+    scm.sent = true; scm.cnt = 2;
+    scm.b.push([7, 'struct file (app.log) ●', true]);
+    $('scmMsg').textContent = 'The kernel installed a NEW fd number (7) in the receiver\'s table, pointing at the SAME struct file. f_count is now 2.';
+    scmDraw();
+  });
+  $('scmRead').addEventListener('click', () => {
+    if (!scm.sent) { $('scmMsg').textContent = 'Send the fd first: the receiver has no fd 7 yet (read would fail with EBADF).'; return; }
+    scm.pos += 10;
+    $('scmMsg').textContent = `Receiver read 10 bytes through fd 7. The shared offset moved to ${scm.pos}, for the sender's fd 5 too.`;
+    scmDraw();
+  });
+  $('scmReset').addEventListener('click', scmReset);
+  scmReset();
+
+  /* ---------- shared memory diagram ---------- */
+  (function () {
+    const s = $('shmSvg');
+    const fg = 'var(--text)', mu = 'var(--muted)';
+    s.append(sv('text', { x: 20, y: 20, 'font-size': 13, fill: fg, 'font-weight': 700 }, 'process A'));
+    s.append(sv('text', { x: 500, y: 20, 'font-size': 13, fill: fg, 'font-weight': 700 }, 'process B'));
+    s.append(sv('text', { x: 250, y: 20, 'font-size': 13, fill: fg, 'font-weight': 700 }, 'physical RAM'));
+    const va = [['0x7f10a000', 50], ['0x7f10b000', 95]], vb = [['0x7fa3c000', 50], ['0x7fa3d000', 95]];
+    const fr = [['frame #812', 50], ['frame #813', 95]];
+    va.forEach(([t, y]) => { s.append(sv('rect', { x: 10, y, width: 130, height: 34, rx: 5, fill: 'var(--c-blue-soft)', stroke: 'var(--c-blue)' })); s.append(sv('text', { x: 75, y: y + 22, 'text-anchor': 'middle', 'font-size': 12, fill: fg }, t)); });
+    vb.forEach(([t, y]) => { s.append(sv('rect', { x: 500, y, width: 130, height: 34, rx: 5, fill: 'var(--c-pink-soft)', stroke: 'var(--c-pink)' })); s.append(sv('text', { x: 565, y: y + 22, 'text-anchor': 'middle', 'font-size': 12, fill: fg }, t)); });
+    fr.forEach(([t, y]) => { s.append(sv('rect', { x: 255, y, width: 130, height: 34, rx: 5, fill: 'var(--c-purple-soft)', stroke: 'var(--c-purple)' })); s.append(sv('text', { x: 320, y: y + 22, 'text-anchor': 'middle', 'font-size': 12, fill: fg }, t)); });
+    [50, 95].forEach((y) => {
+      s.append(sv('line', { x1: 140, y1: y + 17, x2: 255, y2: y + 17, stroke: 'var(--c-blue)', 'stroke-width': 2, 'marker-end': '' }));
+      s.append(sv('line', { x1: 500, y1: y + 17, x2: 385, y2: y + 17, stroke: 'var(--c-pink)', 'stroke-width': 2 }));
+    });
+    s.append(sv('text', { x: 75, y: 160, 'text-anchor': 'middle', 'font-size': 11, fill: mu }, "A's page table"));
+    s.append(sv('text', { x: 565, y: 160, 'text-anchor': 'middle', 'font-size': 11, fill: mu }, "B's page table"));
+    s.append(sv('text', { x: 320, y: 160, 'text-anchor': 'middle', 'font-size': 11, fill: mu }, '/dev/shm/mycounter (tmpfs)'));
+    s.append(sv('text', { x: 320, y: 195, 'text-anchor': 'middle', 'font-size': 12, fill: fg }, 'different virtual addresses → the same RAM'));
+  })();
+
+  /* ---------- race ---------- */
+  function race(locked) {
+    $('raceNo').classList.toggle('primary', !locked);
+    $('raceLock').classList.toggle('primary', locked);
+    let counter = 0, lost = 0;
+    const st = [{ left: 1000, phase: 0, reg: 0 }, { left: 1000, phase: 0, reg: 0 }];
+    let cur = 0, holder = -1;
+    const trace = [];
+    let tracing = true;
+    let guard = 0;
+    while ((st[0].left || st[1].left) && guard++ < 100000) {
+      if (!st[cur].left || Math.random() < 0.3) { cur = 1 - cur; if (!st[cur].left) cur = 1 - cur; }
+      const p = st[cur];
+      if (locked && p.phase === 0 && holder !== -1 && holder !== cur) { cur = 1 - cur; continue; }
+      if (p.phase === 0) { if (locked) holder = cur; p.reg = counter; p.phase = 1; if (tracing) trace.push(`${cur ? 'B' : 'A'}: read  counter -> ${p.reg}`); }
+      else if (p.phase === 1) { p.reg += 1; p.phase = 2; }
+      else {
+        if (counter !== p.reg - 1) lost++;
+        counter = p.reg; p.phase = 0; p.left--; if (locked) holder = -1;
+        if (tracing) trace.push(`${cur ? 'B' : 'A'}: write counter <- ${counter}`);
+      }
+      if (trace.length >= 10) tracing = false;
+    }
+    const rs = $('raceStats'); rs.innerHTML = '';
+    rs.append(stat('expected', 2000), stat('final counter', counter, counter === 2000 ? 'ok' : 'bad'), stat('lost updates', 2000 - counter, counter === 2000 ? 'ok' : 'bad'));
+    $('raceTrace').textContent = 'first steps:\n' + trace.join('\n') + (locked ? '\n(the lock makes each read-add-write indivisible)' : '\n(when both read the same value, one increment is lost)');
+  }
+  $('raceNo').addEventListener('click', () => race(false));
+  $('raceLock').addEventListener('click', () => race(true));
+  race(false);
+
+  /* ---------- message queue ---------- */
+  let mq = [], mqSeq = 0;
+  function mqDraw() {
+    const q = $('mqQueue'); q.innerHTML = '';
+    if (!mq.length) q.append(h('span', { class: 'hint' }, '(queue empty: mq_receive would block)'));
+    mq.forEach((m, i) => q.append(h('div', { class: 'qitem', style: i === 0 ? 'outline:2px solid var(--accent)' : '' }, h('b', null, 'prio ' + m.p), m.t)));
+  }
+  function mqSend(t, p) {
+    mq.push({ t, p, seq: mqSeq++ });
+    mq.sort((a, b) => b.p - a.p || a.seq - b.seq);
+    mqDraw();
+  }
+  $('mqSend').addEventListener('click', () => { const p = Math.max(0, Math.min(9, +$('mqPrio').value || 0)); mqSend($('mqText').value.slice(0, 24) || '(empty)', p); $('mqOut').textContent = `mq_send(q, "${$('mqText').value}", prio ${p})`; });
+  $('mqRecv').addEventListener('click', () => {
+    if (!mq.length) { $('mqOut').textContent = 'mq_receive: queue empty -> the caller would block (or EAGAIN with O_NONBLOCK)'; return; }
+    const m = mq.shift(); mqDraw();
+    $('mqOut').textContent = `mq_receive -> "${m.t}" (priority ${m.p}): highest priority first, FIFO among equals`;
+  });
+  $('mqFill').addEventListener('click', () => { ['thumbnail a', 'email b', 'URGENT backup', 'log rotate'].forEach((t) => mqSend(t, t.startsWith('URGENT') ? 9 : Math.floor(Math.random() * 6))); });
+  mqSend('resize img41', 3); mqSend('resize img40', 3);
+
+  /* ---------- TCP vs UDP ---------- */
+  function netSend() {
+    const data = 'HELLOWORLD!';
+    const cuts = [];
+    let i = 0;
+    while (i < data.length) { const n = 1 + Math.floor(Math.random() * 5); cuts.push(data.slice(i, i + n)); i += n; }
+    const t = $('tcpOut'); t.innerHTML = '';
+    cuts.forEach((c, k) => t.append(h('span', { class: 'chunk' }, `read #${k + 1}: "${c}"`)));
+    const u = $('udpOut'); u.innerHTML = '';
+    const loss = +$('udpLoss').value / 100;
+    ['HELLO', 'WORLD', '!'].forEach((d) => u.append(h('span', { class: 'chunk' + (Math.random() < loss ? ' lost' : '') }, `"${d}"`)));
+  }
+  $('udpLoss').addEventListener('input', () => { $('udpLossV').textContent = $('udpLoss').value + '%'; });
+  $('udpLossV').textContent = $('udpLoss').value + '%';
+  $('netSend').addEventListener('click', netSend);
+  netSend();
+
+  /* ---------- packet path ---------- */
+  const PK = [
+    ['NIC', 'hardware', 'The network card receives the frame and DMAs it into a buffer in RAM described by the RX ring (2.5). No CPU involved yet.'],
+    ['RX ring', 'RAM', 'A ring of descriptors the driver prepared in advance: each points at an empty buffer the NIC may fill.'],
+    ['Hard IRQ', 'interrupt', 'The NIC raises an interrupt (3.4). The top half is tiny: it disables further NIC interrupts and schedules NAPI.'],
+    ['NAPI poll', 'NET_RX softirq', 'The softirq polls the ring and processes up to a budget of packets per run, in batches, instead of one interrupt each.'],
+    ['sk_buff', 'kernel struct', 'Each packet is wrapped in an sk_buff: metadata + pointers into the data. Layers move pointers to the headers, never copy. GRO merges consecutive TCP segments.'],
+    ['netfilter', 'IP layer', 'iptables/nftables hooks: PREROUTING, the routing decision, then INPUT. Firewall rules (and container NAT) run here.'],
+    ['TCP', 'transport', 'Checksum, sequence numbers, send an ACK, and find the socket by its 4-tuple (src IP, src port, dst IP, dst port).'],
+    ['socket buffer', 'socket', 'The data is queued in the socket\'s receive buffer.'],
+    ['wake reader', 'scheduler', 'The socket\'s wait queue is woken (7.7) or the fd is marked ready in epoll (7.8). The reader becomes R.'],
+    ['read()', 'user space', 'read() copies the bytes from the receive buffer into user memory. Done.'],
+  ];
+  let pk = 0, pkTimer = null;
+  function pkDraw() {
+    const g = $('pkGrid'); g.innerHTML = '';
+    PK.forEach((s, i) => g.append(h('div', { class: 'pstage' + (i === pk ? ' cur' : i < pk ? ' done' : '') }, h('span', { class: 'lay' }, `${i + 1}. ${s[1]}`), h('b', null, s[0]))));
+    $('pkText').textContent = PK[pk][2];
+    $('pkCount').textContent = `step ${pk + 1} / ${PK.length}`;
+  }
+  $('pkNext').addEventListener('click', () => { pk = Math.min(PK.length - 1, pk + 1); pkDraw(); });
+  $('pkPrev').addEventListener('click', () => { pk = Math.max(0, pk - 1); pkDraw(); });
+  $('pkPlay').addEventListener('click', () => {
+    clearInterval(pkTimer); pk = 0; pkDraw();
+    pkTimer = setInterval(() => { if (pk >= PK.length - 1) { clearInterval(pkTimer); return; } pk++; pkDraw(); }, 1300);
+  });
+  pkDraw();
+
+  /* ---------- IRQ vs NAPI ---------- */
+  function pps() {
+    const v = +$('ppsR').value;
+    const rate = Math.round(1000 * Math.pow(2000, v / 100));         // 1k .. 2M pps, log scale
+    const irq = rate * (1 + 0.5) / 1e6, napi = rate * 0.5 / 1e6 + (rate / 64) * 1 / 1e6;
+    $('ppsV').textContent = rate.toLocaleString();
+    const set = (bar, pct, val) => { const p = Math.min(100, val * 100); bar.style.width = p + '%'; bar.classList.toggle('hot', val >= 1); pct.textContent = val >= 1 ? '≥100% CPU (saturated)' : (val * 100).toFixed(1) + '% CPU'; };
+    set($('irqBar'), $('irqPct'), irq);
+    set($('napiBar'), $('napiPct'), napi);
+    $('ppsMsg').textContent = irq >= 1
+      ? 'With one interrupt per packet the core spends all its time in interrupt handling: an interrupt storm. NAPI amortizes one interrupt over a batch of up to 64 packets.'
+      : 'At low rates both are fine; the difference grows with the packet rate.';
+  }
+  $('ppsR').addEventListener('input', pps);
+  pps();
+
+})();
+</script>
+</body>
+</html>

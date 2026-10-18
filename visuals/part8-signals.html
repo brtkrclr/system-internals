@@ -1,0 +1,862 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Signals, Visualized</title>
+<meta name="description" content="Interactive visuals for Part 8 of System Internals: signal lifecycle, signal table, dispositions and handlers, masks and pending signals, and signals with threads.">
+<script>
+  (function () {
+    var saved = null;
+    try { saved = localStorage.getItem('theme'); } catch (e) {}
+    var dark = saved ? saved === 'dark' : window.matchMedia('(prefers-color-scheme: dark)').matches;
+    document.documentElement.setAttribute('data-theme', dark ? 'dark' : 'light');
+  })();
+</script>
+<style>
+
+  :root {
+    --bg: #ffffff; --surface: #f6f8fa; --surface-2: #eaeef2; --text: #1f2328; --muted: #59636e;
+    --border: #d0d7de; --accent: #0969da; --accent-soft: #ddf4ff;
+    --c-blue: #0969da; --c-pink: #bf3989; --c-green: #1a7f37; --c-amber: #9a6700; --c-purple: #8250df; --c-red: #cf222e;
+    --c-blue-soft: #ddf4ff; --c-pink-soft: #ffeff7; --c-green-soft: #dafbe1; --c-amber-soft: #fff8c5; --c-purple-soft: #fbefff; --c-red-soft: #ffebe9;
+    --hatch: repeating-linear-gradient(45deg, transparent 0 4px, rgba(130,80,223,.22) 4px 7px);
+    --radius: 8px;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+  }
+  html[data-theme="dark"] {
+    --bg: #0d1117; --surface: #151b23; --surface-2: #212830; --text: #e6edf3; --muted: #9198a1;
+    --border: #3d444d; --accent: #4493f8; --accent-soft: rgba(56,139,253,.15);
+    --c-blue: #4493f8; --c-pink: #f778ba; --c-green: #3fb950; --c-amber: #d29922; --c-purple: #ab7df8; --c-red: #f85149;
+    --c-blue-soft: rgba(56,139,253,.18); --c-pink-soft: rgba(247,120,186,.16); --c-green-soft: rgba(63,185,80,.16);
+    --c-amber-soft: rgba(210,153,34,.18); --c-purple-soft: rgba(171,125,248,.18); --c-red-soft: rgba(248,81,73,.16);
+    --hatch: repeating-linear-gradient(45deg, transparent 0 4px, rgba(171,125,248,.30) 4px 7px);
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", "Noto Sans", Helvetica, Arial, sans-serif; }
+  a { color: var(--accent); }
+  code, .mono { font-family: var(--mono); font-size: .92em; }
+  code { background: var(--surface-2); padding: .1em .35em; border-radius: 4px; }
+
+  header.top { max-width: 1040px; margin: 0 auto; padding: 32px 16px 8px; }
+  header.top h1 { margin: 0 0 6px; font-size: clamp(28px, 5vw, 40px); line-height: 1.15; }
+  header.top p { margin: 0 0 8px; color: var(--muted); max-width: 70ch; }
+  .backlink { font-size: 14px; }
+
+  nav.chips { position: sticky; top: 0; z-index: 10; background: var(--bg); border-bottom: 1px solid var(--border); }
+  nav.chips .inner { max-width: 1040px; margin: 0 auto; padding: 8px 16px; display: flex; gap: 6px; overflow-x: auto; scrollbar-width: thin; }
+  nav.chips a { flex: none; font-size: 13px; padding: 4px 10px; border: 1px solid var(--border); border-radius: 999px;
+                color: var(--text); text-decoration: none; background: var(--surface); white-space: nowrap; }
+  nav.chips a:hover, nav.chips a.active { border-color: var(--accent); color: var(--accent); background: var(--accent-soft); }
+
+  main { max-width: 1040px; margin: 0 auto; padding: 8px 16px 64px; }
+  section.card { border: 1px solid var(--border); border-radius: 12px; padding: 20px; margin: 24px 0; background: var(--bg); scroll-margin-top: 56px; }
+  section.card > h2 { margin: 0 0 4px; font-size: 22px; }
+  section.card > h2 .num { color: var(--muted); font-weight: 500; margin-right: 6px; }
+  .lead { color: var(--muted); margin: 0 0 16px; max-width: 75ch; }
+  .demo { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; margin: 12px 0; overflow-x: auto; }
+  .demo h3 { margin: 0 0 10px; font-size: 15px; }
+  .row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+  .stack { display: flex; flex-direction: column; gap: 10px; }
+  .connect { font-size: 14px; color: var(--muted); border-left: 3px solid var(--accent); padding: 4px 0 4px 10px; margin-top: 14px; }
+  .hint { font-size: 13px; color: var(--muted); }
+  .big { font-family: var(--mono); font-size: 22px; font-weight: 600; }
+  .stat { display: inline-flex; flex-direction: column; padding: 6px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg); min-width: 90px; }
+  .stat .k { font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+  .stat .v { font-family: var(--mono); font-size: 18px; font-weight: 600; }
+  .ok { color: var(--c-green); } .bad { color: var(--c-red); } .warn { color: var(--c-amber); }
+
+  button, select, input[type="text"], input[type="number"] {
+    font: inherit; font-size: 14px; color: var(--text); background: var(--bg);
+    border: 1px solid var(--border); border-radius: 6px; padding: 5px 10px;
+  }
+  button { cursor: pointer; }
+  button:hover { background: var(--surface-2); }
+  button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+  button.primary:hover { filter: brightness(1.08); background: var(--accent); }
+  button:focus-visible, select:focus-visible, input:focus-visible, .bit:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+  input[type="range"] { accent-color: var(--accent); width: min(360px, 100%); }
+  label.inline { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; }
+
+  /* bits */
+  .bits { display: inline-flex; gap: 4px; flex-wrap: nowrap; }
+  .bitcol { display: flex; flex-direction: column; align-items: center; gap: 2px; }
+  .bit { width: 34px; height: 40px; border-radius: 6px; border: 1px solid var(--border); background: var(--bg);
+         font: 600 18px var(--mono); color: var(--muted); cursor: pointer; padding: 0; transition: background .12s, color .12s; }
+  .bit.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .bit.sm { width: 22px; height: 30px; font-size: 14px; }
+  .bitcol .w { font: 11px var(--mono); color: var(--muted); }
+  .nibble { display: inline-flex; flex-direction: column; align-items: center; gap: 6px; padding: 6px; border: 1px dashed var(--border); border-radius: 8px; }
+  .nibble .hx { font: 700 22px var(--mono); color: var(--c-pink); }
+  .gap { width: 10px; }
+
+  /* byte cells */
+  .cells { display: grid; gap: 2px; }
+  .cell { height: 30px; border: 1px solid var(--border); border-radius: 4px; background: var(--bg);
+          font: 11px var(--mono); color: var(--muted); display: flex; align-items: center; justify-content: center; position: relative; }
+  .cell.hl { background: var(--c-blue-soft); border-color: var(--c-blue); color: var(--text); font-weight: 600; }
+  .cell.hl2 { background: var(--c-pink-soft); border-color: var(--c-pink); color: var(--text); }
+  .cell.pad { background: var(--hatch), var(--bg); border-style: dashed; }
+  .cell.line { background: var(--c-amber-soft); }
+  .cell.boxstart { margin-left: 6px; }
+  .cell.lineb { box-shadow: -4px 0 0 0 var(--c-red); margin-left: 8px; }
+
+  table.mem { border-collapse: collapse; font-family: var(--mono); font-size: 14px; }
+  table.mem th, table.mem td { border: 1px solid var(--border); padding: 4px 10px; text-align: center; }
+  table.mem th { background: var(--surface-2); font-weight: 600; font-family: inherit; font-size: 13px; }
+
+  .tiles { display: grid; gap: 1px; }
+  .tile { width: 9px; height: 9px; background: var(--surface-2); border-radius: 1px; }
+  .tile.mark { background: var(--c-pink); }
+
+  .legend { display: flex; flex-wrap: wrap; gap: 12px; font-size: 13px; color: var(--muted); }
+  .legend span::before { content: ""; display: inline-block; width: 12px; height: 12px; border-radius: 3px; margin-right: 5px; vertical-align: -2px; background: var(--sw); border: 1px solid var(--border); }
+
+  /* address space */
+  .addrspace { display: grid; grid-template-columns: 120px 1fr; gap: 0; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; font-size: 13px; max-width: 560px; }
+  .addrspace > div { padding: 8px 10px; border-bottom: 1px solid var(--border); }
+  .addrspace .lbl { font-family: var(--mono); font-size: 11px; color: var(--muted); background: var(--surface-2); }
+  .addrspace .zone.kern { background: var(--c-purple-soft); }
+  .addrspace .zone.hole { background: var(--hatch), var(--bg); color: var(--muted); }
+  .addrspace .zone.user { background: var(--c-green-soft); }
+  .addrspace .zone.here { outline: 3px solid var(--accent); outline-offset: -3px; font-weight: 600; }
+  .bar { height: 26px; border-radius: 6px; display: flex; overflow: hidden; border: 1px solid var(--border); font-size: 12px; }
+  .bar > div { display: flex; align-items: center; justify-content: center; color: var(--text); white-space: nowrap; overflow: hidden; }
+  .logbar { display: grid; grid-template-columns: 110px 1fr 90px; gap: 6px 10px; align-items: center; font-size: 13px; }
+  .logbar .fill { height: 14px; border-radius: 4px; background: var(--accent); }
+
+  /* struct */
+  .fields { display: flex; flex-direction: column; gap: 6px; }
+  .field { display: flex; align-items: center; gap: 8px; font-family: var(--mono); font-size: 14px; }
+  .field .sw { width: 14px; height: 14px; border-radius: 3px; }
+  .field button { padding: 2px 8px; font-size: 13px; }
+  .structgrid { display: grid; grid-template-columns: 56px repeat(8, minmax(38px, 1fr)); gap: 3px; align-items: center; max-width: 520px; }
+  .structgrid .off { font: 11px var(--mono); color: var(--muted); text-align: right; padding-right: 6px; }
+  .structgrid .cell { height: 34px; font-size: 12px; color: var(--text); }
+
+  /* matrix sim */
+  .matrix { display: grid; grid-template-columns: repeat(8, 30px); gap: 3px; }
+  .matrix .cell { height: 30px; transition: background .1s; }
+  .matrix .cell.cached { background: var(--c-blue-soft); }
+  .matrix .cell.hit { background: var(--c-green); color: #fff; border-color: var(--c-green); }
+  .matrix .cell.miss { background: var(--c-red); color: #fff; border-color: var(--c-red); }
+  .matrix .cell.gb { margin-left: 5px; }
+
+  .cores { display: grid; grid-template-columns: repeat(2, minmax(160px, 1fr)); gap: 12px; max-width: 560px; }
+  .core { border: 1px solid var(--border); border-radius: 8px; padding: 10px; background: var(--bg); transition: box-shadow .15s; }
+  .core.flash { box-shadow: 0 0 0 3px var(--c-red); }
+  .core h4 { margin: 0 0 6px; font-size: 14px; }
+  .state { font: 600 13px var(--mono); padding: 2px 6px; border-radius: 4px; }
+  .state.M { background: var(--c-green-soft); color: var(--c-green); }
+  .state.I { background: var(--c-red-soft); color: var(--c-red); }
+  .state.S { background: var(--c-blue-soft); color: var(--c-blue); }
+  .state.none { background: var(--surface-2); color: var(--muted); }
+
+  /* float */
+  .fbits { display: flex; flex-wrap: wrap; gap: 2px; }
+  .fbits .bit { width: 20px; height: 30px; font-size: 13px; }
+  .fbits .bit.s { --tone: var(--c-red); } .fbits .bit.e { --tone: var(--c-blue); } .fbits .bit.f { --tone: var(--c-green); }
+  .fbits .bit { border-color: var(--tone); color: var(--tone); }
+  .fbits .bit.on { background: var(--tone); color: #fff; }
+  .fbits .sep { width: 8px; }
+  .exact { font-family: var(--mono); font-size: 13px; word-break: break-all; background: var(--bg); border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px; }
+
+  /* utf8 */
+  .cps { display: flex; flex-wrap: wrap; gap: 10px; }
+  .cp { border: 1px solid var(--border); border-radius: 8px; background: var(--bg); padding: 10px; min-width: 150px; }
+  .cp .ch { font-size: 30px; line-height: 1.1; }
+  .cp .u { font: 600 13px var(--mono); color: var(--c-purple); }
+  .cp .bytes { font: 13px var(--mono); margin-top: 6px; }
+  .cp .pre { color: var(--muted); }
+  .cp .pay { color: var(--c-green); font-weight: 600; }
+  .cp .hexb { color: var(--c-pink); }
+
+  svg text { font-family: var(--mono); }
+  .theme-btn { position: fixed; top: 10px; right: 12px; z-index: 20; width: 34px; height: 34px; padding: 0; font-size: 16px; }
+  @media (max-width: 600px) {
+    section.card { padding: 14px; }
+    .bit { width: 30px; height: 36px; font-size: 16px; }
+    .structgrid { grid-template-columns: 44px repeat(8, minmax(28px, 1fr)); }
+  }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+
+
+  /* ---- extras for parts 7/8 ---- */
+  .log { font: 13px/1.5 var(--mono); background: var(--bg); border: 1px solid var(--border); border-radius: 6px;
+         padding: 8px 10px; max-height: 190px; overflow: auto; white-space: pre-wrap; margin-top: 10px; }
+  .log:empty::before { content: "(event log)"; color: var(--muted); }
+  .steps { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 4px; }
+  .steps li { padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); font-size: 14px; }
+  .steps li.done { opacity: .55; }
+  .steps li.now { border-color: var(--accent); background: var(--accent-soft); font-weight: 600; opacity: 1; }
+  .box { border: 1px solid var(--border); border-radius: 8px; background: var(--bg); padding: 8px 10px; overflow-x: auto; }
+  .box h4 { margin: 0 0 6px; font-size: 13px; color: var(--muted); text-transform: uppercase; letter-spacing: .04em; }
+  .chip { display: inline-block; font: 12px var(--mono); padding: 1px 7px; border-radius: 4px; background: var(--surface-2); border: 1px solid var(--border); margin: 1px 2px; white-space: nowrap; }
+  .chip.blue { background: var(--c-blue-soft); border-color: var(--c-blue); }
+  .chip.pink { background: var(--c-pink-soft); border-color: var(--c-pink); }
+  .chip.green { background: var(--c-green-soft); border-color: var(--c-green); }
+  .chip.amber { background: var(--c-amber-soft); border-color: var(--c-amber); }
+  .chip.purple { background: var(--c-purple-soft); border-color: var(--c-purple); }
+  .chip.red { background: var(--c-red-soft); border-color: var(--c-red); }
+  .cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; }
+  .tree { font: 13px/1.7 var(--mono); }
+  .tree .node { cursor: pointer; padding: 0 4px; border-radius: 4px; }
+  .tree .node:hover, .tree .node.sel { background: var(--accent-soft); color: var(--accent); }
+  table.mem tr.sel td { background: var(--accent-soft); }
+  table.mem td.l { text-align: left; }
+  table.mem tr.click { cursor: pointer; }
+  table.mem tr.click:hover td { background: var(--surface-2); }
+  .layer { border: 1px solid var(--border); border-radius: 6px; padding: 6px 10px; background: var(--bg); font-size: 14px; transition: background .15s, border-color .15s; }
+  .layer.on { background: var(--accent-soft); border-color: var(--accent); font-weight: 600; }
+  .arrow { text-align: center; color: var(--muted); font-size: 13px; line-height: 1; }
+  .lane { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 6px; }
+  .pill { display: inline-block; padding: 2px 10px; border-radius: 999px; font: 600 13px var(--mono); border: 1px solid var(--border); }
+  .pill.user { background: var(--c-green-soft); color: var(--c-green); border-color: var(--c-green); }
+  .pill.kernel { background: var(--c-purple-soft); color: var(--c-purple); border-color: var(--c-purple); }
+  .pill.dead { background: var(--c-red-soft); color: var(--c-red); border-color: var(--c-red); }
+  .pill.stop { background: var(--c-amber-soft); color: var(--c-amber); border-color: var(--c-amber); }
+  .pill.sleep { background: var(--c-blue-soft); color: var(--c-blue); border-color: var(--c-blue); }
+  .bitgrid { display: grid; grid-template-columns: repeat(32, minmax(14px, 1fr)); gap: 2px; min-width: 540px; }
+  .bitgrid .b { height: 26px; border: 1px solid var(--border); border-radius: 3px; background: var(--bg); font: 9px var(--mono); color: var(--muted);
+                display: flex; align-items: center; justify-content: center; cursor: pointer; padding: 0; }
+  .bitgrid .b.blk { background: var(--c-amber-soft); border-color: var(--c-amber); color: var(--text); }
+  .bitgrid .b.pend { box-shadow: inset 0 -4px 0 var(--c-red); color: var(--text); font-weight: 700; }
+  .bitgrid .b.set { background: var(--accent); border-color: var(--accent); color: #fff; }
+  .stackv { display: flex; flex-direction: column-reverse; gap: 3px; min-width: 200px; }
+  .frame { border: 1px solid var(--border); border-radius: 5px; padding: 4px 8px; font: 12px var(--mono); background: var(--bg); }
+  .frame.sig { background: var(--c-pink-soft); border-color: var(--c-pink); }
+  .frame.h { background: var(--c-blue-soft); border-color: var(--c-blue); }
+  .ring { display: grid; grid-template-columns: repeat(8, minmax(44px, 1fr)); gap: 4px; max-width: 520px; }
+  .ring .slot { height: 44px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); font: 11px var(--mono);
+                display: flex; align-items: center; justify-content: center; text-align: center; position: relative; padding: 2px; }
+  .ring .slot.full { background: var(--c-blue-soft); border-color: var(--c-blue); }
+  .ring .slot.done { background: var(--c-green-soft); border-color: var(--c-green); }
+  .ring .slot .ptr { position: absolute; top: -15px; font-size: 10px; color: var(--c-pink); font-weight: 700; }
+  .fdgrid { display: grid; grid-template-columns: repeat(16, minmax(26px, 1fr)); gap: 3px; max-width: 560px; }
+  .fdgrid .cell { height: 28px; font-size: 10px; }
+  .fdgrid .cell.ready { background: var(--c-green-soft); border-color: var(--c-green); color: var(--text); font-weight: 700; }
+  .fdgrid .cell.scan { background: var(--c-amber-soft); border-color: var(--c-amber); }
+  .footnav { max-width: 1040px; margin: 0 auto; padding: 0 16px 48px; display: flex; justify-content: space-between; gap: 12px; flex-wrap: wrap; font-size: 14px; }
+  .perm { display: inline-grid; grid-template-columns: auto repeat(3, 34px); gap: 4px 6px; align-items: center; font-size: 13px; }
+  .perm label { display: flex; justify-content: center; }
+  .perm .hdr { font: 600 11px var(--mono); color: var(--muted); text-align: center; }
+  .seekbar { position: relative; height: 34px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); max-width: 560px; }
+  .seekbar .req { position: absolute; top: 6px; width: 20px; height: 20px; margin-left: -10px; border-radius: 50%; background: var(--c-blue-soft); border: 1px solid var(--c-blue); font: 10px/18px var(--mono); text-align: center; }
+  .seekbar .head { position: absolute; top: -4px; bottom: -4px; width: 3px; margin-left: -1px; background: var(--c-red); transition: left .25s; }
+
+</style>
+</head>
+<body>
+<button class="theme-btn" id="themeBtn" type="button" aria-label="Toggle dark mode"></button>
+
+<header class="top">
+  <a class="backlink" href="../#8-signals">← Back to the notes: Part 8</a>
+  <h1>Signals, Visualized</h1>
+  <p>Send signals, block them, catch them, and watch exactly when and where the kernel delivers them.</p>
+</header>
+
+<nav class="chips" aria-label="Sections"><div class="inner" id="chips"></div></nav>
+
+<main>
+
+<!-- 8.1 -->
+<section class="card" id="s8-1" data-title="8.1 Lifecycle">
+  <h2><span class="num">8.1</span>What Signals Are: the Lifecycle</h2>
+  <p class="lead">A signal is generated, marked pending in the target's <code>task_struct</code>, and acted on only when the target is about to return to user mode. Pick a source and step through it.</p>
+  <div class="demo">
+    <div class="row">
+      <label class="inline">source <select id="lcSrc">
+        <option value="int">Ctrl+C (TTY driver → SIGINT)</option>
+        <option value="term">kill(pid, SIGTERM) from another process</option>
+        <option value="segv">bad pointer → #PF → SIGSEGV (synchronous)</option>
+      </select></label>
+      <label class="inline">target <select id="lcState">
+        <option value="run">running user code</option>
+        <option value="sleep">sleeping in read() (state S)</option>
+      </select></label>
+      <label class="inline"><input type="checkbox" id="lcHandler" checked> handler installed</label>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <button type="button" id="lcPrev">← Back</button>
+      <button type="button" id="lcNext" class="primary">Next step →</button>
+      <button type="button" id="lcReset">Reset</button>
+      <span class="hint">CPU mode: <span class="pill user" id="lcMode">USER</span></span>
+    </div>
+    <div class="row" style="align-items:flex-start; gap:20px; margin-top:12px">
+      <ol class="steps" id="lcSteps" style="flex:1; min-width:280px"></ol>
+      <div class="stack" style="gap:6px">
+        <span class="hint">user stack (grows down; top of list = top of stack)</span>
+        <div class="stackv" id="lcStack"></div>
+        <span class="hint">pending set: <b class="mono" id="lcPend">{}</b></span>
+      </div>
+    </div>
+  </div>
+  <div class="demo">
+    <h3>Why <code>kill -9</code> can't kill a process in state D (right away)</h3>
+    <div class="row">
+      <label class="inline">process state <select id="dState"><option value="D">D: uninterruptible (waiting on NFS / disk)</option><option value="S">S: interruptible (waiting on a socket)</option></select></label>
+      <button type="button" id="dKill">kill -9</button>
+      <button type="button" id="dIO">I/O completes</button>
+      <button type="button" id="dReset">Reset</button>
+    </div>
+    <div class="row" style="margin-top:10px"><span class="hint">state:</span> <span class="pill sleep" id="dPill">D</span> <span class="hint">pending:</span> <b class="mono" id="dPend">{}</b></div>
+    <div class="log" id="dLog"></div>
+  </div>
+  <div class="connect">Connection: delivery piggybacks on the return path of every mode switch (3.5); synchronous signals come from CPU exceptions (3.4); keyboard signals come from the TTY driver and process groups (4.5).</div>
+</section>
+
+<!-- 8.2 -->
+<section class="card" id="s8-2" data-title="8.2 Common signals">
+  <h2><span class="num">8.2</span>Common Signals</h2>
+  <p class="lead">Numbers below are for x86/ARM. Filter by default action, and click a row for details. The last column is the shell's exit status when the signal kills a process (128 + N).</p>
+  <div class="demo">
+    <div class="row">
+      <input type="text" id="sigSearch" placeholder="search: term, pipe, ctrl…" size="22" aria-label="search signals">
+      <button type="button" data-sf="all" class="primary">all</button>
+      <button type="button" data-sf="term">terminate</button>
+      <button type="button" data-sf="core">core dump</button>
+      <button type="button" data-sf="stop">stop</button>
+      <button type="button" data-sf="ign">ignore</button>
+      <button type="button" data-sf="nocatch">can't be caught</button>
+    </div>
+    <div style="overflow-x:auto; margin-top:12px"><table class="mem" id="sigTable"></table></div>
+    <p id="sigDetail" style="margin:10px 0 0"></p>
+  </div>
+  <div class="connect">Connection: 137 = SIGKILL, often the OOM killer (6.8) or a cgroup memory limit (10.2); 141 = SIGPIPE from a pipe with no reader (9.1).</div>
+</section>
+
+<!-- 8.3 -->
+<section class="card" id="s8-3" data-title="8.3 Dispositions">
+  <h2><span class="num">8.3</span>Dispositions and Handlers</h2>
+  <p class="lead">For every signal the process chooses: default action, ignore, or run a handler. Set them, then send signals. SIGKILL and SIGSTOP refuse to change.</p>
+  <div class="demo">
+    <div class="row" style="align-items:flex-start; gap:20px">
+      <div style="overflow-x:auto"><table class="mem" id="dispTable"></table></div>
+      <div class="stack" style="min-width:240px; flex:1">
+        <div class="row"><span class="hint">process 4321:</span> <span class="pill user" id="procPill">running</span></div>
+        <div class="row">
+          <button type="button" id="procExec">execve() new program</button>
+          <button type="button" id="procReset">Restart process</button>
+        </div>
+        <p class="hint" style="margin:0">execve() resets handled signals to default (the handler code is gone) but keeps ignored ones ignored. That's how <code>nohup</code> works.</p>
+        <div class="log" id="procLog"></div>
+      </div>
+    </div>
+  </div>
+  <div class="demo">
+    <h3>docker stop and PID 1</h3>
+    <p class="hint" style="margin:0 0 10px">The kernel ignores signals sent to PID 1 from inside its own namespace unless PID 1 installed a handler. A SIGKILL sent from the host's namespace still works. Time is sped up.</p>
+    <div class="row">
+      <label class="inline">container <select id="dkMode">
+        <option value="nohandler">app is PID 1, no SIGTERM handler</option>
+        <option value="handler">app is PID 1, handles SIGTERM</option>
+        <option value="tini">tini is PID 1, app is its child</option>
+      </select></label>
+      <button type="button" id="dkStop" class="primary">▶ docker stop</button>
+    </div>
+    <div class="bar" style="margin-top:12px; max-width:560px; height:30px"><div id="dkFill" style="flex:0 0 0%; background: var(--accent-soft); justify-content:flex-start; padding-left:6px; transition: flex-basis .1s linear"></div><div style="flex:1"></div></div>
+    <div class="row" style="margin-top:8px"><div class="stat"><span class="k">elapsed</span><span class="v" id="dkT">0.0 s</span></div><div class="stat"><span class="k">exit status</span><span class="v" id="dkExit">–</span></div></div>
+    <div class="log" id="dkLog"></div>
+  </div>
+  <div class="connect">Connection: handlers run asynchronously, so they may only call async-signal-safe functions; <code>signalfd</code> turns signals into fd reads for an epoll loop (7.8).</div>
+</section>
+
+<!-- 8.4 -->
+<section class="card" id="s8-4" data-title="8.4 Masks & pending">
+  <h2><span class="num">8.4</span>Signal Masks and Pending Signals</h2>
+  <p class="lead">Masks are 64-bit numbers: bit N−1 is signal N. Click cells to block signals (amber), then send signals. A blocked standard signal sets one pending bit (red underline) no matter how often it's sent; real-time signals queue.</p>
+  <div class="demo">
+    <div class="row">
+      <button type="button" data-send="2">send SIGINT (2)</button>
+      <button type="button" data-send="17">send SIGCHLD (17)</button>
+      <button type="button" data-send="34">send SIGRTMIN (34)</button>
+      <button type="button" id="mkBlockPreset">block SIGINT + SIGRTMIN</button>
+      <button type="button" id="mkClear">unblock all</button>
+    </div>
+    <div style="overflow-x:auto; margin-top:12px"><div class="bitgrid" id="mkGrid"></div></div>
+    <div class="row" style="margin-top:10px">
+      <div class="stat"><span class="k">SigBlk (blocked)</span><span class="v" id="mkBlk"></span></div>
+      <div class="stat"><span class="k">SigPnd (pending)</span><span class="v" id="mkPnd"></span></div>
+      <div class="stat"><span class="k">RT queue (SIGRTMIN)</span><span class="v" id="mkQ">0</span></div>
+    </div>
+    <div class="log" id="mkLog"></div>
+  </div>
+  <div class="demo">
+    <h3>Decode a mask from <code>/proc/&lt;pid&gt;/status</code></h3>
+    <div class="row">
+      <input type="text" id="decIn" class="mono" size="20" value="0000000000380004" aria-label="hex mask">
+      <button type="button" data-dec="0000000000010000">SigBlk example</button>
+      <button type="button" data-dec="0000000000380004">SigIgn example</button>
+      <button type="button" data-dec="000000004b817efb">SigCgt example</button>
+    </div>
+    <div style="overflow-x:auto; margin-top:12px"><div class="bitgrid" id="decGrid"></div></div>
+    <p id="decOut" style="margin:10px 0 0"></p>
+  </div>
+  <div class="connect">Connection: because standard signals don't queue, a SIGCHLD handler must reap in a <code>waitpid(-1, …, WNOHANG)</code> loop (4.9).</div>
+</section>
+
+<!-- 8.5 -->
+<section class="card" id="s8-5" data-title="8.5 Threads">
+  <h2><span class="num">8.5</span>Signals and Threads</h2>
+  <p class="lead">Handlers are shared by the whole process; masks are per thread. A process-directed signal goes to any one thread that doesn't block it. Here the process has handlers installed for SIGTERM and SIGINT.</p>
+  <div class="demo">
+    <div class="cols" id="thCols"></div>
+    <div class="row" style="margin-top:12px">
+      <button type="button" id="thKill" class="primary">kill(pid, SIGTERM)</button>
+      <button type="button" id="thPk">pthread_kill(T2, SIGINT)</button>
+      <button type="button" id="thSegv">T1 dereferences NULL</button>
+      <button type="button" id="thPattern">Apply the sigwait pattern</button>
+      <button type="button" id="thReset">Reset</button>
+    </div>
+    <div class="row" style="margin-top:10px"><span class="hint">process-wide pending (shared_pending):</span> <b class="mono" id="thShared">{}</b></div>
+    <div class="log" id="thLog"></div>
+  </div>
+  <div class="connect">Connection: threads are tasks that share <code>sighand</code> and the thread group's <code>signal</code> struct (5.1); a fatal signal kills every thread of the process.</div>
+</section>
+
+</main>
+
+<nav class="footnav" aria-label="Part pages">
+  <a href="part7-files.html">← Part 7: Files and I/O</a>
+  <a href="index.html">All visuals</a>
+  <a href="part9-ipc.html">Part 9: IPC →</a>
+</nav>
+
+<script>
+(function () {
+  'use strict';
+  const $ = (id) => document.getElementById(id);
+  const h = (tag, props, ...kids) => {
+    const n = document.createElement(tag);
+    if (props) for (const k in props) {
+      if (k === 'class') n.className = props[k];
+      else if (k === 'style') n.style.cssText = props[k];
+      else if (k.startsWith('on')) n.addEventListener(k.slice(2), props[k]);
+      else n.setAttribute(k, props[k]);
+    }
+    for (const kid of kids.flat()) if (kid != null) n.append(kid);
+    return n;
+  };
+  const logTo = (id, msg) => { const l = $(id); l.textContent += (l.textContent ? '\n' : '') + msg; l.scrollTop = l.scrollHeight; };
+
+  /* ---------- theme ---------- */
+  const themeBtn = $('themeBtn');
+  function applyTheme(t) {
+    document.documentElement.setAttribute('data-theme', t);
+    themeBtn.innerHTML = t === 'dark' ? '&#9728;' : '&#9790;';
+    themeBtn.title = t === 'dark' ? 'Switch to light mode' : 'Switch to dark mode';
+  }
+  applyTheme(document.documentElement.getAttribute('data-theme'));
+  themeBtn.addEventListener('click', () => {
+    const t = document.documentElement.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+    try { localStorage.setItem('theme', t); } catch (e) {}
+    applyTheme(t);
+  });
+
+  /* ---------- chips ---------- */
+  const chips = $('chips');
+  const sections = [...document.querySelectorAll('section.card')];
+  sections.forEach((s) => chips.append(h('a', { href: '#' + s.id }, s.dataset.title)));
+  const chipLinks = [...chips.children];
+  const io = new IntersectionObserver((entries) => {
+    entries.forEach((e) => {
+      if (!e.isIntersecting) return;
+      chipLinks.forEach((a) => a.classList.toggle('active', a.getAttribute('href') === '#' + e.target.id));
+      const act = chips.querySelector('.active');
+      if (act) act.scrollIntoView({ block: 'nearest', inline: 'nearest' });
+    });
+  }, { rootMargin: '-45% 0px -50% 0px' });
+  sections.forEach((s) => io.observe(s));
+
+  /* ---------- signal data ---------- */
+  // [number, name, default action, description]
+  const SIGS = [
+    [1, 'SIGHUP', 'term', 'Terminal hung up. Daemons conventionally use it as "reload config".'],
+    [2, 'SIGINT', 'term', 'Interrupt from keyboard (Ctrl+C): politely stop the foreground job.'],
+    [3, 'SIGQUIT', 'core', 'Ctrl+\\: quit and dump core.'],
+    [4, 'SIGILL', 'core', 'Illegal instruction (#UD).'],
+    [5, 'SIGTRAP', 'core', 'Breakpoint / trace trap (debuggers).'],
+    [6, 'SIGABRT', 'core', 'abort(), failed assert().'],
+    [7, 'SIGBUS', 'core', 'Bus error: misaligned access on strict CPUs, or touching an mmap past end of file.'],
+    [8, 'SIGFPE', 'core', 'Arithmetic error: integer divide by zero.'],
+    [9, 'SIGKILL', 'term', 'Kill. Cannot be caught, blocked or ignored. Used by the OOM killer.'],
+    [10, 'SIGUSR1', 'term', 'User-defined (e.g. dd prints progress).'],
+    [11, 'SIGSEGV', 'core', 'Segmentation fault: invalid memory access.'],
+    [12, 'SIGUSR2', 'term', 'User-defined.'],
+    [13, 'SIGPIPE', 'term', 'Wrote to a pipe or socket with no reader.'],
+    [14, 'SIGALRM', 'term', 'Timer from alarm() expired.'],
+    [15, 'SIGTERM', 'term', 'Termination request: the polite, catchable "please exit". Default of kill, systemctl stop, docker stop.'],
+    [16, 'SIGSTKFLT', 'term', 'Coprocessor stack fault (unused on modern Linux).'],
+    [17, 'SIGCHLD', 'ign', 'A child stopped or exited.'],
+    [18, 'SIGCONT', 'cont', 'Resume a stopped process.'],
+    [19, 'SIGSTOP', 'stop', 'Pause. Cannot be caught, blocked or ignored.'],
+    [20, 'SIGTSTP', 'stop', 'Terminal stop (Ctrl+Z): the catchable version of SIGSTOP.'],
+    [21, 'SIGTTIN', 'stop', 'Background job tried to read from the terminal.'],
+    [22, 'SIGTTOU', 'stop', 'Background job tried to write to the terminal.'],
+    [23, 'SIGURG', 'ign', 'Urgent data on a socket.'],
+    [24, 'SIGXCPU', 'core', 'CPU time limit (RLIMIT_CPU) exceeded.'],
+    [25, 'SIGXFSZ', 'core', 'File size limit exceeded.'],
+    [26, 'SIGVTALRM', 'term', 'Virtual timer expired.'],
+    [27, 'SIGPROF', 'term', 'Profiling timer expired.'],
+    [28, 'SIGWINCH', 'ign', 'Terminal window resized (vim, less redraw).'],
+    [29, 'SIGIO', 'term', 'I/O now possible.'],
+    [30, 'SIGPWR', 'term', 'Power failure.'],
+    [31, 'SIGSYS', 'core', 'Bad system call (also used by seccomp).'],
+  ];
+  const NAME = {}; SIGS.forEach(([n, nm]) => (NAME[n] = nm));
+  const sigName = (n) => NAME[n] || (n === 32 || n === 33 ? `signal ${n} (glibc internal)` : n >= 34 ? `SIGRTMIN+${n - 34}` : 'signal ' + n);
+  const ACTION = { term: 'terminate', core: 'terminate + core dump', ign: 'ignore', stop: 'stop', cont: 'continue' };
+  const NOCATCH = new Set([9, 19]);
+
+  /* ---------- 8.1 lifecycle ---------- */
+  let lcStep = 0;
+  function lcPlan() {
+    const src = $('lcSrc').value, st = $('lcState').value, handler = $('lcHandler').checked;
+    const sig = src === 'int' ? 2 : src === 'term' ? 15 : 11;
+    const nm = sigName(sig);
+    const steps = [];
+    const S = (text, mode, stack, pend) => steps.push({ text, mode, stack, pend });
+    const base = ['main()', 'work()'];
+    if (src === 'int') S('Generation: you press Ctrl+C. The TTY driver (kernel, not the shell) sends SIGINT to every process in the foreground process group.', st === 'sleep' ? 'kernel' : 'user', base, false);
+    else if (src === 'term') S('Generation: another process calls kill(4321, SIGTERM). The kernel checks permission (matching UID or CAP_KILL).', st === 'sleep' ? 'kernel' : 'user', base, false);
+    else S('Generation: work() dereferences a bad pointer. The MMU raises #PF, the kernel finds no VMA, and generates SIGSEGV for this very thread (synchronous).', 'kernel', base, false);
+    S(`Pending: the kernel sets the ${nm} bit in the target's pending set and flags TIF_SIGPENDING. A second ${nm} now would just find the bit already set.`, src === 'segv' || st === 'sleep' ? 'kernel' : 'user', base, true);
+    if (src !== 'segv' && st === 'sleep') S('The target is sleeping in state S, so the kernel wakes it. Its read() will return EINTR (or be restarted automatically with SA_RESTART).', 'kernel', base, true);
+    else if (src !== 'segv') S('The target is running user code. Nothing happens until it next enters the kernel: a syscall, or the next timer interrupt.', 'user', base, true);
+    S('Return to user mode: on the way out of the kernel it checks TIF_SIGPENDING. Yes, a signal is pending and not blocked.', 'kernel', base, true);
+    if (handler && sig !== 9) {
+      S('The kernel builds a signal frame on the user stack (saving all interrupted registers), sets rip to the handler, and returns to user mode.', 'kernel', [...base, 'signal frame (saved regs)'], false);
+      S(`The handler runs as if work() had called it. A good handler just sets a volatile sig_atomic_t flag.`, 'user', [...base, 'signal frame (saved regs)', `handler(${sig})`], false);
+      S('The handler returns into a tiny trampoline that calls the rt_sigreturn syscall.', 'kernel', [...base, 'signal frame (saved regs)'], false);
+      S('rt_sigreturn restores the saved registers: work() resumes exactly where it was interrupted, as if nothing happened.', 'user', base, false);
+    } else {
+      const core = sig === 11;
+      S(`No handler: the default action applies: ${core ? 'terminate + core dump' : 'terminate'}. The kernel runs do_exit(); the parent gets SIGCHLD and sees status ${128 + sig} (128 + ${sig}).`, 'kernel', [], false);
+    }
+    return { steps, nm };
+  }
+  function lcDraw() {
+    const { steps, nm } = lcPlan();
+    lcStep = Math.max(0, Math.min(lcStep, steps.length - 1));
+    const ol = $('lcSteps');
+    ol.innerHTML = '';
+    steps.forEach((s, i) => ol.append(h('li', { class: i < lcStep ? 'done' : i === lcStep ? 'now' : '' }, `${i + 1}. ${s.text}`)));
+    const cur = steps[lcStep];
+    const mode = $('lcMode');
+    mode.textContent = cur.mode === 'kernel' ? 'KERNEL' : 'USER';
+    mode.className = 'pill ' + cur.mode;
+    const st = $('lcStack');
+    st.innerHTML = '';
+    if (!cur.stack.length) st.append(h('div', { class: 'frame', style: 'color: var(--c-red)' }, '(process gone)'));
+    cur.stack.forEach((f) => st.append(h('div', { class: 'frame' + (f.startsWith('signal') ? ' sig' : f.startsWith('handler') ? ' h' : '') }, f)));
+    $('lcPend').textContent = cur.pend ? `{ ${nm} }` : '{}';
+    $('lcPrev').disabled = lcStep === 0;
+    $('lcNext').disabled = lcStep === steps.length - 1;
+  }
+  $('lcNext').addEventListener('click', () => { lcStep++; lcDraw(); });
+  $('lcPrev').addEventListener('click', () => { lcStep--; lcDraw(); });
+  $('lcReset').addEventListener('click', () => { lcStep = 0; lcDraw(); });
+  ['lcSrc', 'lcState', 'lcHandler'].forEach((id) => $(id).addEventListener('change', () => { lcStep = 0; lcDraw(); }));
+  lcDraw();
+
+  // D state
+  let dAlive = true, dPending = false;
+  function dDraw() {
+    const p = $('dPill');
+    if (!dAlive) { p.textContent = 'gone (status 137)'; p.className = 'pill dead'; }
+    else { p.textContent = $('dState').value; p.className = 'pill sleep'; }
+    $('dPend').textContent = dPending ? '{ SIGKILL }' : '{}';
+  }
+  $('dKill').addEventListener('click', () => {
+    if (!dAlive) return;
+    dPending = true;
+    if ($('dState').value === 'S') { dAlive = false; dPending = false; logTo('dLog', 'SIGKILL → task in S is woken → on its way back to user mode the fatal signal is acted on → dead. Status 137.'); }
+    else logTo('dLog', 'SIGKILL marked pending. But the task sleeps in D: signals do not wake it. It stays in D...');
+    dDraw();
+  });
+  $('dIO').addEventListener('click', () => {
+    if (!dAlive) return;
+    if (dPending) { dAlive = false; dPending = false; logTo('dLog', 'I/O completed → the task wakes, heads back toward user mode, sees the pending SIGKILL → dead. Status 137.'); }
+    else logTo('dLog', 'I/O completed → the task continues normally (no signal pending).');
+    dDraw();
+  });
+  $('dReset').addEventListener('click', () => { dAlive = true; dPending = false; $('dLog').textContent = ''; dDraw(); });
+  $('dState').addEventListener('change', () => { dAlive = true; dPending = false; $('dLog').textContent = ''; dDraw(); });
+  dDraw();
+
+  /* ---------- 8.2 table ---------- */
+  let sigFilter = 'all', sigSel = 15;
+  function sigDraw() {
+    const q = $('sigSearch').value.trim().toLowerCase();
+    const t = $('sigTable');
+    t.innerHTML = '';
+    t.append(h('tr', null, ...['No.', 'Name', 'Default action', 'Catchable?', 'Meaning', 'Exit status'].map((x) => h('th', null, x))));
+    SIGS.forEach(([n, nm, act, desc]) => {
+      if (sigFilter === 'nocatch' ? !NOCATCH.has(n) : sigFilter !== 'all' && act !== sigFilter) return;
+      if (q && !(nm.toLowerCase().includes(q) || desc.toLowerCase().includes(q) || String(n) === q)) return;
+      const tr = h('tr', { class: 'click' + (n === sigSel ? ' sel' : '') },
+        h('td', null, String(n)), h('td', null, h('b', null, nm)), h('td', null, ACTION[act]),
+        h('td', { class: NOCATCH.has(n) ? 'bad' : 'ok' }, NOCATCH.has(n) ? 'no' : 'yes'),
+        h('td', { class: 'l', style: 'font-family: inherit; font-size: 13px' }, desc),
+        h('td', null, act === 'term' || act === 'core' ? String(128 + n) : '–'));
+      tr.addEventListener('click', () => { sigSel = n; sigDraw(); });
+      t.append(tr);
+    });
+    const s = SIGS.find((x) => x[0] === sigSel);
+    if (s) {
+      const [n, nm, act, desc] = s;
+      $('sigDetail').innerHTML = '';
+      $('sigDetail').append(h('b', null, `${nm} (${n}): `), desc, ` Default: ${ACTION[act]}.`,
+        NOCATCH.has(n) ? ' The kernel refuses any handler or SIG_IGN for it.' : ' The process may handle, ignore or block it.',
+        act === 'term' || act === 'core' ? ` Killed by it, a process shows exit status ${128 + n} in the shell.` : '',
+        h('br'), h('code', null, `kill -${nm.slice(3)} <pid>`), '  or  ', h('code', null, `kill -${n} <pid>`));
+    }
+  }
+  $('sigSearch').addEventListener('input', sigDraw);
+  document.querySelectorAll('[data-sf]').forEach((b) => b.addEventListener('click', () => {
+    sigFilter = b.dataset.sf;
+    document.querySelectorAll('[data-sf]').forEach((x) => x.classList.toggle('primary', x === b));
+    sigDraw();
+  }));
+  sigDraw();
+
+  /* ---------- 8.3 dispositions ---------- */
+  const DSIGS = [2, 15, 1, 10, 17, 11, 9, 19, 18];
+  let disp = {}, procState = 'running';
+  function procReset() {
+    disp = {};
+    DSIGS.forEach((n) => (disp[n] = 'dfl'));
+    procState = 'running';
+    $('procLog').textContent = '';
+    dispDraw();
+  }
+  function act(n) { return SIGS.find((x) => x[0] === n)[2]; }
+  function dispDraw() {
+    const t = $('dispTable');
+    t.innerHTML = '';
+    t.append(h('tr', null, h('th', null, 'signal'), h('th', null, 'disposition'), h('th', null, '')));
+    DSIGS.forEach((n) => {
+      const sel = h('select', { 'aria-label': 'disposition for ' + sigName(n) },
+        h('option', { value: 'dfl' }, `SIG_DFL (${ACTION[act(n)]})`), h('option', { value: 'ign' }, 'SIG_IGN'), h('option', { value: 'handler' }, 'handler()'));
+      sel.value = disp[n];
+      sel.addEventListener('change', () => {
+        if (NOCATCH.has(n)) { logTo('procLog', `sigaction(${sigName(n)}, …) → -1 EINVAL: it can't be caught or ignored.`); sel.value = 'dfl'; return; }
+        disp[n] = sel.value;
+        logTo('procLog', `sigaction(${sigName(n)}) → ${sel.value === 'dfl' ? 'SIG_DFL' : sel.value === 'ign' ? 'SIG_IGN' : 'handler'}`);
+      });
+      t.append(h('tr', null, h('td', null, `${sigName(n)} (${n})`), h('td', null, sel),
+        h('td', null, h('button', { type: 'button', onclick: () => send(n) }, 'send'))));
+    });
+    const p = $('procPill');
+    const cls = { running: 'user', stopped: 'stop' }[procState] || 'dead';
+    p.className = 'pill ' + cls;
+    p.textContent = procState;
+  }
+  function send(n) {
+    const nm = sigName(n);
+    if (procState !== 'running' && procState !== 'stopped') { logTo('procLog', `kill(4321, ${nm}) → -1 ESRCH: no such process.`); return; }
+    if (procState === 'stopped' && n !== 18 && n !== 9) {
+      if (disp[n] === 'ign' || (disp[n] === 'dfl' && act(n) === 'ign')) logTo('procLog', `${nm} discarded (ignored).`);
+      else logTo('procLog', `${nm} stays pending while the process is stopped. Send SIGCONT.`);
+      return;
+    }
+    const d = NOCATCH.has(n) ? 'dfl' : disp[n];
+    if (d === 'ign') { logTo('procLog', `${nm} → ignored (discarded on arrival).`); return; }
+    if (d === 'handler') { logTo('procLog', `${nm} → handler(${n}) runs on a signal frame, then rt_sigreturn. Process keeps running.`); if (n === 18 && procState === 'stopped') procState = 'running'; dispDraw(); return; }
+    const a = act(n);
+    if (a === 'ign') logTo('procLog', `${nm} → default action: ignore.`);
+    else if (a === 'stop') { procState = 'stopped'; logTo('procLog', `${nm} → stopped (state T).`); }
+    else if (a === 'cont') { if (procState === 'stopped') { procState = 'running'; logTo('procLog', `${nm} → continued.`); } else logTo('procLog', `${nm} → already running.`); }
+    else { procState = `killed by ${nm} (status ${128 + n})${a === 'core' ? ', core dumped' : ''}`; logTo('procLog', `${nm} → default action: ${ACTION[a]}. Parent sees status ${128 + n}.`); }
+    dispDraw();
+  }
+  $('procExec').addEventListener('click', () => {
+    if (procState !== 'running') { logTo('procLog', 'Process is not running.'); return; }
+    const reset = DSIGS.filter((n) => disp[n] === 'handler');
+    reset.forEach((n) => (disp[n] = 'dfl'));
+    logTo('procLog', `execve(): handlers reset to SIG_DFL: ${reset.map(sigName).join(', ') || 'none'}. Ignored signals stay ignored: ${DSIGS.filter((n) => disp[n] === 'ign').map(sigName).join(', ') || 'none'}.`);
+    dispDraw();
+  });
+  $('procReset').addEventListener('click', procReset);
+  procReset();
+
+  // docker stop
+  let dkTimer = null;
+  $('dkStop').addEventListener('click', () => {
+    clearInterval(dkTimer);
+    $('dkLog').textContent = '';
+    $('dkExit').textContent = '–';
+    const mode = $('dkMode').value;
+    let t = 0;
+    const fill = $('dkFill');
+    fill.style.flexBasis = '0%';
+    fill.textContent = '';
+    logTo('dkLog', '0.0 s  docker sends SIGTERM to the container\'s PID 1');
+    if (mode === 'handler') {
+      logTo('dkLog', '0.0 s  PID 1 has a SIGTERM handler → it finishes requests, flushes, exits cleanly');
+      $('dkExit').textContent = '0'; $('dkT').textContent = '0.2 s'; fill.style.flexBasis = '2%';
+      return;
+    }
+    if (mode === 'tini') {
+      logTo('dkLog', '0.0 s  tini (PID 1) has handlers: it forwards SIGTERM to the app (not PID 1)');
+      logTo('dkLog', '0.0 s  app: default action for SIGTERM = terminate → exits; tini reaps it and exits with its status');
+      $('dkExit').textContent = '143'; $('dkT').textContent = '0.1 s'; fill.style.flexBasis = '1%';
+      return;
+    }
+    logTo('dkLog', '0.0 s  PID 1 has no handler → the kernel drops the signal. Nothing happens...');
+    dkTimer = setInterval(() => {
+      t += 0.25;
+      $('dkT').textContent = t.toFixed(1) + ' s';
+      fill.style.flexBasis = (t / 10) * 100 + '%';
+      fill.textContent = t >= 2 ? 'waiting for grace period' : '';
+      if (t >= 10) {
+        clearInterval(dkTimer);
+        logTo('dkLog', '10.0 s grace period over → docker sends SIGKILL from the host namespace');
+        logTo('dkLog', '10.0 s SIGKILL can\'t be ignored → PID 1 dies → every process in the namespace is killed');
+        $('dkExit').textContent = '137';
+        fill.textContent = 'SIGKILL';
+      }
+    }, 70);
+  });
+
+  /* ---------- 8.4 masks ---------- */
+  let blocked = new Set(), pendStd = new Set(), rtQueue = 0;
+  const maskHex = (set) => { let v = 0n; set.forEach((n) => (v |= 1n << BigInt(n - 1))); return v.toString(16).padStart(16, '0'); };
+  function mkDraw() {
+    const g = $('mkGrid');
+    g.innerHTML = '';
+    for (let n = 1; n <= 64; n++) {
+      const b = h('button', { type: 'button', class: 'b' + (blocked.has(n) ? ' blk' : '') + (pendStd.has(n) || (n === 34 && rtQueue) ? ' pend' : ''), title: `${n}: ${sigName(n)}`, 'aria-label': `${n} ${sigName(n)}` }, String(n));
+      b.addEventListener('click', () => toggleBlock(n));
+      g.append(b);
+    }
+    const pend = new Set(pendStd); if (rtQueue) pend.add(34);
+    $('mkBlk').textContent = maskHex(blocked);
+    $('mkPnd').textContent = maskHex(pend);
+    $('mkQ').textContent = String(rtQueue);
+  }
+  function toggleBlock(n) {
+    if (NOCATCH.has(n)) { logTo('mkLog', `sigprocmask cannot block ${sigName(n)}: the kernel silently leaves it unblocked.`); return; }
+    if (blocked.has(n)) {
+      blocked.delete(n);
+      logTo('mkLog', `unblock ${sigName(n)}`);
+      if (pendStd.has(n)) { pendStd.delete(n); logTo('mkLog', `  → pending ${sigName(n)} delivered NOW, exactly once`); }
+      if (n === 34 && rtQueue) { logTo('mkLog', `  → ${rtQueue} queued SIGRTMIN delivered, in order (real-time signals queue)`); rtQueue = 0; }
+    } else { blocked.add(n); logTo('mkLog', `block ${sigName(n)}`); }
+    mkDraw();
+  }
+  document.querySelectorAll('[data-send]').forEach((b) => b.addEventListener('click', () => {
+    const n = +b.dataset.send;
+    if (!blocked.has(n)) logTo('mkLog', `send ${sigName(n)} → not blocked → delivered immediately`);
+    else if (n >= 34) { rtQueue++; logTo('mkLog', `send ${sigName(n)} → blocked → queued (queue length ${rtQueue})`); }
+    else if (pendStd.has(n)) logTo('mkLog', `send ${sigName(n)} → blocked, bit already set → merged (lost as a separate event)`);
+    else { pendStd.add(n); logTo('mkLog', `send ${sigName(n)} → blocked → pending bit set`); }
+    mkDraw();
+  }));
+  $('mkBlockPreset').addEventListener('click', () => { [2, 34].forEach((n) => blocked.add(n)); logTo('mkLog', 'block SIGINT and SIGRTMIN'); mkDraw(); });
+  $('mkClear').addEventListener('click', () => { [...blocked].forEach(toggleBlock); });
+  mkDraw();
+
+  function decDraw() {
+    const raw = $('decIn').value.trim().replace(/^0x/i, '');
+    const g = $('decGrid');
+    g.innerHTML = '';
+    if (!/^[0-9a-f]{1,16}$/i.test(raw)) { $('decOut').textContent = 'Enter up to 16 hex digits.'; return; }
+    const v = BigInt('0x' + raw);
+    const names = [];
+    for (let n = 1; n <= 64; n++) {
+      const on = (v >> BigInt(n - 1)) & 1n;
+      if (on) names.push(`${n} ${sigName(n)}`);
+      g.append(h('div', { class: 'b' + (on ? ' set' : ''), title: `${n}: ${sigName(n)}` }, String(n)));
+    }
+    $('decOut').innerHTML = '';
+    $('decOut').append(h('b', null, `${names.length} signal${names.length === 1 ? '' : 's'}: `), names.length ? names.join(', ') : 'none');
+  }
+  $('decIn').addEventListener('input', decDraw);
+  document.querySelectorAll('[data-dec]').forEach((b) => b.addEventListener('click', () => { $('decIn').value = b.dataset.dec; decDraw(); }));
+  decDraw();
+
+  /* ---------- 8.5 threads ---------- */
+  let threads, alive, shared, sigwaitMode = false;
+  function thReset() {
+    threads = [
+      { id: 'T0 (main)', mask: new Set(), pend: new Set(), note: '' },
+      { id: 'T1', mask: new Set(), pend: new Set(), note: '' },
+      { id: 'T2', mask: new Set(), pend: new Set(), note: '' },
+    ];
+    alive = true; shared = new Set(); sigwaitMode = false;
+    $('thLog').textContent = '';
+    thDraw();
+  }
+  function thDraw() {
+    const c = $('thCols');
+    c.innerHTML = '';
+    threads.forEach((t, i) => {
+      const box = h('div', { class: 'box' }, h('h4', null, t.id));
+      [[15, 'SIGTERM'], [2, 'SIGINT']].forEach(([n, nm]) => {
+        const cb = h('input', { type: 'checkbox' });
+        cb.checked = t.mask.has(n);
+        cb.disabled = !alive;
+        cb.addEventListener('change', () => {
+          if (cb.checked) t.mask.add(n); else { t.mask.delete(n); unblocked(i, n); }
+          thDraw();
+        });
+        box.append(h('label', { class: 'inline', style: 'display:flex' }, cb, `blocks ${nm}`));
+      });
+      box.append(h('div', { class: 'hint', style: 'margin-top:4px' }, alive ? (t.note || 'running') : 'dead'),
+        h('div', { class: 'mono hint' }, 'own pending: ' + (t.pend.size ? [...t.pend].map(sigName).join(', ') : '{}')));
+      c.append(box);
+    });
+    $('thShared').textContent = shared.size ? `{ ${[...shared].map(sigName).join(', ')} }` : '{}';
+  }
+  function deliver(i, n, how) {
+    if (sigwaitMode && i === 0) {
+      threads[0].note = `sigwait() returned ${sigName(n)}: handled in normal code`;
+      logTo('thLog', `${how}: ${sigName(n)} → only T0 doesn't block it → T0's sigwait() returns it (synchronous, no async handler)`);
+      return;
+    }
+    threads[i].note = `ran handler(${sigName(n)})`;
+    logTo('thLog', `${how}: ${sigName(n)} → delivered to ${threads[i].id}, which runs the shared handler`);
+  }
+  function unblocked(i, n) {
+    if (threads[i].pend.has(n)) { threads[i].pend.delete(n); deliver(i, n, 'unblocked'); }
+    else if (shared.has(n)) { shared.delete(n); deliver(i, n, 'unblocked'); }
+  }
+  $('thKill').addEventListener('click', () => {
+    if (!alive) return;
+    const ok = threads.map((t, i) => i).filter((i) => !threads[i].mask.has(15));
+    threads.forEach((t) => (t.note = sigwaitMode && t === threads[0] ? 'signal thread: sigwait()' : ''));
+    if (!ok.length) { shared.add(15); logTo('thLog', 'kill(pid, SIGTERM): every thread blocks it → stays in the process-wide pending set until some thread unblocks it'); }
+    else deliver(ok[Math.floor(Math.random() * ok.length)], 15, `kill(pid) (eligible: ${ok.map((i) => threads[i].id).join(', ')}; the kernel picks one)`);
+    thDraw();
+  });
+  $('thPk').addEventListener('click', () => {
+    if (!alive) return;
+    threads.forEach((t) => (t.note = sigwaitMode && t === threads[0] ? 'signal thread: sigwait()' : ''));
+    if (threads[2].mask.has(2)) { threads[2].pend.add(2); logTo('thLog', 'pthread_kill(T2, SIGINT): thread-directed, and T2 blocks it → pending on T2 only (no other thread can take it)'); }
+    else deliver(2, 2, 'pthread_kill(T2)');
+    thDraw();
+  });
+  $('thSegv').addEventListener('click', () => {
+    if (!alive) return;
+    alive = false;
+    logTo('thLog', 'T1 dereferences NULL → #PF → SIGSEGV goes to T1 (synchronous, thread-directed)');
+    logTo('thLog', 'No SIGSEGV handler → default action: terminate + core → the WHOLE process dies, all threads. Status 139.');
+    thDraw();
+  });
+  $('thPattern').addEventListener('click', () => {
+    thReset();
+    threads[1].mask = new Set([15, 2]); threads[2].mask = new Set([15, 2]);
+    sigwaitMode = true;
+    threads[0].note = 'signal thread: sigwait() on SIGTERM, SIGINT';
+    logTo('thLog', 'Pattern: workers T1, T2 block all signals; T0 waits for them synchronously with sigwait() (or a signalfd). Now kill(pid) always lands on T0.');
+    thDraw();
+  });
+  $('thReset').addEventListener('click', thReset);
+  thReset();
+})();
+</script>
+</body>
+</html>
