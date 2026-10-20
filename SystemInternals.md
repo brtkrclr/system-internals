@@ -2964,6 +2964,7 @@ Every `pthread_mutex`, `pthread_cond`, semaphore, Go `sync.Mutex` slow path, and
 > 🔗 **Connections:** Futexes combine everything: an atomic CAS instruction (below) on a cache line (MESI, 2.4), a system call (3.3) only on contention, a sleep in state `S` (4.8), and a wakeup that puts the thread back on a run queue (3.6). Because the kernel keys the wait queue by the *physical* page + offset for shared futexes, they also work across processes in shared memory (9.3).
 
 ### Atomic Operations
+> [Things Unix Can Do Atomically by Richard Crowley](https://rcrowley.org/2010/01/06/things-unix-can-do-atomically.html)
 
 Instead of three separate steps:
 
