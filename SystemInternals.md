@@ -3551,6 +3551,35 @@ These bits map directly to the `rwx` permissions you see in `/proc/<pid>/maps` (
 
 ## 6.4 Connection to Processes: `task_struct` → `mm_struct` → VMAs
 
+How the structures point to each other
+```
+ task_struct (one per THREAD — the kernel schedules these)
+ ├─ mm ─────────────┐   threads of one process all point to the SAME mm_struct
+ └─ active_mm ──────┤   (kernel threads: mm = NULL, active_mm = borrowed)
+                    ▼
+ mm_struct (one per ADDRESS SPACE ≈ one per process)
+ ├─ mm_mt  (maple tree, kernel ≥6.1; older: mmap list + rbtree)
+ │    ├─ vm_area_struct [0x5555..000, 0x5555..fff)  r-xp  vm_file → /usr/bin/app   (code)
+ │    ├─ vm_area_struct [heap]                       rw-p  anon_vma               (heap)
+ │    ├─ vm_area_struct [7f..]                       r-xp  vm_file → libc.so      (lib)
+ │    └─ vm_area_struct [stack]                      rw-p  anon_vma               (stack)
+ │         each VMA: vm_start, vm_end, vm_flags, vm_mm (back-pointer), vm_ops, vm_pgoff
+ ├─ pgd ──► PGD → P4D → PUD → PMD → PTE ──► PFN (physical frame number)
+ ├─ mmap_lock (rw_semaphore protecting the VMA tree)
+ ├─ mm_users / mm_count, rss_stat, total_vm, start_brk/brk, start_stack ...
+ │                                              │
+ │                                              ▼
+ │   vmemmap: struct page[ PFN ]  ← one big array, index = PFN (pfn_to_page / page_to_pfn)
+ │    ├─ flags (PG_dirty, PG_lru, PG_locked, ...)
+ │    ├─ _refcount   (how many references hold this frame)
+ │    ├─ _mapcount   (how many PTEs map it)
+ │    ├─ mapping ──► address_space (file page)  OR  anon_vma (anon page, low bit tagged)
+ │    └─ index       (offset in file / in VMA)
+ │                    │
+ └────────────────────┘   reverse map: page → anon_vma/address_space → all VMAs → their mm's
+```
+
+
 As explained in 4.2, a process is represented internally by `struct task_struct`. This struct stores **process-specific state**, including memory:
 
 ```
